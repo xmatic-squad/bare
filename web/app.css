@@ -473,6 +473,58 @@ input[type="password"] {
   color: var(--mute);
 }
 
+/* уведомления и установка — docs/ui.md, «Настройки» */
+
+.state {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.install {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mute);
+}
+
+/* баннер установки — docs/ui.md, «Баннер установки (iOS)».
+   Цель нажатия у крестика — 44 px, отрицательные поля не дают ей
+   растянуть сам баннер */
+
+.banner-slot {
+  flex: none;
+}
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.banner__text {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--mute);
+}
+
+.banner__close {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  margin: -12px -14px -12px auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--stone);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 /* участники комнаты — docs/ui.md, «Участники» */
 
 .members {

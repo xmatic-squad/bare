@@ -55,6 +55,17 @@ func (s *Store) Ack(ctx context.Context, device string, ids []string) error {
 	return nil
 }
 
+// Target — устройство, которому конверт лёг в очередь. Ник рядом
+// с идентификатором нужен пушу: устройства отправителя пуша не получают
+// (ADR-045), а доля аккаунта в отправке ограничена (ADR-048). Признак
+// подписки — оттуда же: устройству без неё пуш не отправить, и место
+// в очереди отправки на него не тратится.
+type Target struct {
+	ID      string
+	Nick    string
+	HasPush bool
+}
+
 // Delivery — одна доставка: готовый конверт и всё, что нужно, чтобы
 // разложить его по очередям. Envelope сервер не разбирает, поэтому id
 // приходит отдельным полем. Заполнено ровно одно из To и Room — адресат
@@ -78,7 +89,7 @@ type Delivery struct {
 // не хранит, повтор порождает повторную доставку, а склеивает её клиент
 // (ADR-017). Поэтому вставка молча пропускает уже лежащую в очереди
 // строку, а список устройств от этого не зависит.
-func (s *Store) DeliverDM(ctx context.Context, d Delivery) ([]string, error) {
+func (s *Store) DeliverDM(ctx context.Context, d Delivery) ([]Target, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: доставка: %w", err)
@@ -97,11 +108,11 @@ func (s *Store) DeliverDM(ctx context.Context, d Delivery) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, id := range devices {
+	for _, device := range devices {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO queue (device_id, msg_id, envelope, created_at) VALUES (?, ?, ?, ?)
 			ON CONFLICT(device_id, msg_id) DO NOTHING`,
-			id, d.MsgID, d.Envelope, d.Now); err != nil {
+			device.ID, d.MsgID, d.Envelope, d.Now); err != nil {
 			return nil, fmt.Errorf("store: доставка (очередь): %w", err)
 		}
 	}
@@ -118,7 +129,7 @@ func (s *Store) DeliverDM(ctx context.Context, d Delivery) ([]string, error) {
 // Членство и keyId проверены раньше, отдельным запросом: между проверкой
 // и этой транзакцией состав мог измениться, поэтому получателей она берёт
 // из состава на момент доставки.
-func (s *Store) DeliverRoom(ctx context.Context, d Delivery) ([]string, error) {
+func (s *Store) DeliverRoom(ctx context.Context, d Delivery) ([]Target, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: доставка в комнату: %w", err)
@@ -129,11 +140,11 @@ func (s *Store) DeliverRoom(ctx context.Context, d Delivery) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, id := range devices {
+	for _, device := range devices {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO queue (device_id, msg_id, envelope, created_at) VALUES (?, ?, ?, ?)
 			ON CONFLICT(device_id, msg_id) DO NOTHING`,
-			id, d.MsgID, d.Envelope, d.Now); err != nil {
+			device.ID, d.MsgID, d.Envelope, d.Now); err != nil {
 			return nil, fmt.Errorf("store: доставка в комнату (очередь): %w", err)
 		}
 	}
@@ -144,48 +155,49 @@ func (s *Store) DeliverRoom(ctx context.Context, d Delivery) ([]string, error) {
 }
 
 // deviceIDs — устройства обоих собеседников, кроме отправившего.
-func deviceIDs(ctx context.Context, tx *sql.Tx, from, to, exclude string) ([]string, error) {
+func deviceIDs(ctx context.Context, tx *sql.Tx, from, to, exclude string) ([]Target, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id FROM devices WHERE nick IN (?, ?) AND id <> ? ORDER BY id`, from, to, exclude)
+		SELECT id, nick, push_subscription IS NOT NULL
+		FROM devices WHERE nick IN (?, ?) AND id <> ? ORDER BY id`, from, to, exclude)
 	if err != nil {
 		return nil, fmt.Errorf("store: доставка (устройства): %w", err)
 	}
 	defer rows.Close()
 
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: доставка (устройства): %w", err)
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
+	out, err := targets(rows)
+	if err != nil {
 		return nil, fmt.Errorf("store: доставка (устройства): %w", err)
 	}
 	return out, nil
 }
 
 // roomDeviceIDs — устройства всех участников комнаты, кроме отправившего.
-func roomDeviceIDs(ctx context.Context, tx *sql.Tx, room, exclude string) ([]string, error) {
+func roomDeviceIDs(ctx context.Context, tx *sql.Tx, room, exclude string) ([]Target, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT d.id FROM devices d JOIN room_members m ON m.nick = d.nick
+		SELECT d.id, d.nick, d.push_subscription IS NOT NULL
+		FROM devices d JOIN room_members m ON m.nick = d.nick
 		WHERE m.room_id = ? AND d.id <> ? ORDER BY d.id`, room, exclude)
 	if err != nil {
 		return nil, fmt.Errorf("store: доставка в комнату (устройства): %w", err)
 	}
 	defer rows.Close()
 
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: доставка в комнату (устройства): %w", err)
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
+	out, err := targets(rows)
+	if err != nil {
 		return nil, fmt.Errorf("store: доставка в комнату (устройства): %w", err)
 	}
 	return out, nil
+}
+
+// targets собирает устройства получателей из выборки «id, nick, подписка».
+func targets(rows *sql.Rows) ([]Target, error) {
+	var out []Target
+	for rows.Next() {
+		var t Target
+		if err := rows.Scan(&t.ID, &t.Nick, &t.HasPush); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }

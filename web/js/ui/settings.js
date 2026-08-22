@@ -1,15 +1,30 @@
 // Настройки — docs/ui.md, «Настройки». На этом этапе только разделы,
-// которые уже работают: кто ты, смена пароля, выход, удаление аккаунта.
-// Уведомления, устройства, история и установка приложения — дальше по плану.
+// которые уже работают: кто ты, уведомления, установка приложения, смена
+// пароля, выход, удаление аккаунта. Устройства и история — дальше по плану.
 
 import { ApiError } from "../api.js";
 import { fingerprintGroups } from "../crypto.js";
-import { button, confirmPanel, el, field, message, setError, setNote } from "./dom.js";
+import * as pwa from "../pwa.js";
+import { INSTALL_IOS, button, confirmPanel, el, field, message, setError, setNote } from "./dom.js";
+
+// Состояния уведомлений и инструкция установки — docs/ui.md, «Настройки».
+const NOTIFICATIONS = {
+  on: "включены",
+  off: "выключены",
+  denied: "запрещены в браузере",
+};
+
+const INSTALL_HINT = "поделиться → на экран «домой»";
 
 export function renderSettings(root, ctx) {
   root.append(head(ctx));
   const body = el("div", "body settings");
-  body.append(identity(ctx), passwordBlock(ctx), exitBlock(ctx), deleteBlock(ctx));
+  body.append(identity(ctx), notificationsBlock(ctx));
+  const install = installBlock();
+  if (install !== null) {
+    body.append(install);
+  }
+  body.append(passwordBlock(ctx), exitBlock(ctx), deleteBlock(ctx));
   root.append(body);
 }
 
@@ -28,6 +43,97 @@ function identity(ctx) {
   const groups = fingerprintGroups(ctx.me.fingerprint ?? "");
   box.append(el("p", "fp", groups.slice(0, 8).join(" ")));
   box.append(el("p", "fp", groups.slice(8).join(" ")));
+  return box;
+}
+
+// notificationsBlock — «уведомления»: состояние и одна кнопка
+// (docs/ui.md, «Настройки»). Состояний три; «запрещены в браузере» —
+// это и отклонённое разрешение, и браузер без уведомлений, и сервер без
+// VAPID-ключа: включать нечем, кнопки нет (ADR-046).
+function notificationsBlock(ctx) {
+  const box = block("уведомления");
+  const status = el("p", "state", "");
+  // На iOS вне установленного приложения кнопки нет: там пуши работают
+  // только у приложения на экране «Домой» (ADR-011).
+  const ios = pwa.iosBrowser();
+  const action = button("включить");
+  action.hidden = true;
+  const note = message();
+  if (ios) {
+    box.append(status, el("p", "install", INSTALL_IOS), note);
+  } else {
+    box.append(status, action, note);
+  }
+
+  let mode = "denied";
+  const paint = async () => {
+    if (ios) {
+      status.textContent = NOTIFICATIONS.off;
+      return;
+    }
+    mode = await pwa.notifications(await vapidKey(ctx));
+    status.textContent = NOTIFICATIONS[mode];
+    action.textContent = mode === "on" ? "выключить" : "включить";
+    action.hidden = mode === "denied";
+  };
+
+  action.addEventListener("click", async () => {
+    if (action.disabled) {
+      return;
+    }
+    action.disabled = true;
+    setNote(note, "");
+    try {
+      if (mode === "on") {
+        await pwa.disable();
+      } else {
+        await pwa.enable(await vapidKey(ctx));
+      }
+    } catch (err) {
+      setError(note, ctx.errorText(err));
+    } finally {
+      action.disabled = false;
+      await paint();
+    }
+  });
+
+  paint();
+  return box;
+}
+
+// vapidKey — публичный ключ сервера для подписки (docs/protocol.md,
+// «Публичные»). Конфигурации нет — подписаться нечем.
+async function vapidKey(ctx) {
+  try {
+    return (await ctx.ensureConfig()).vapidPublicKey ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// installBlock — «установить приложение» (docs/ui.md, «Настройки»).
+// Кнопка есть, если поймано beforeinstallprompt; на iOS вместо неё
+// инструкция. Устанавливать нечего — раздела нет.
+function installBlock() {
+  const ios = pwa.iosBrowser();
+  if (!ios && !pwa.installable()) {
+    return null;
+  }
+  const box = block("установить приложение");
+  if (ios) {
+    box.append(el("p", "install", INSTALL_HINT));
+    return box;
+  }
+  const action = button("установить");
+  action.addEventListener("click", () => {
+    // Приглашение одноразовое: показали — устанавливать этим разделом
+    // больше нечего, и раздела нет (docs/ui.md, «Настройки»). Раздел
+    // уходит сразу: дальше человек отвечает браузеру, а не нам, и ждать
+    // его ответа кнопке незачем.
+    pwa.install();
+    box.remove();
+  });
+  box.append(action);
   return box;
 }
 

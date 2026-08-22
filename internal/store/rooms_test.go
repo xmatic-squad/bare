@@ -155,9 +155,12 @@ func TestRoomKeysWithinOneMillisecond(t *testing.T) {
 		}
 	}
 	// Свежим ключом можно писать: он остался ключом комнаты.
-	member, known, err := s.RoomAccess(ctx, "room-1", "marta", "aaa")
-	if err != nil || !member || !known {
-		t.Errorf("доступ по свежему ключу: member=%v known=%v err=%v", member, known, err)
+	access, err := s.RoomAccess(ctx, "room-1", "marta", "aaa")
+	if err != nil || !access.Member || !access.KnownKey {
+		t.Errorf("доступ по свежему ключу: %+v, %v", access, err)
+	}
+	if access.Name != "общая" {
+		t.Errorf("имя комнаты: получено %q, ожидалось \"общая\"", access.Name)
 	}
 }
 

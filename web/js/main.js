@@ -5,7 +5,9 @@
 // и отдаётся экранам через ctx.
 
 import * as api from "./api.js";
+import { NetworkError } from "./api.js";
 import * as db from "./db.js";
+import * as pwa from "./pwa.js";
 import * as sync from "./sync.js";
 import {
   deriveAccountKeys,
@@ -183,12 +185,20 @@ async function ensureConfig() {
 
 // restore отвечает на вопрос «вошли ли мы»: сессия у сервера и ключи
 // на устройстве нужны вместе. Ключей нет — нужен вход, он их и вернёт.
+//
+// Запрос, который не дошёл, — это «нет соединения», а не «мы не вошли»
+// (docs/ui.md, «Сеть и состояния»): офлайн-старт установленного
+// приложения поднимается из кэша с ключами и историей устройства,
+// а полосу «нет соединения» рисует sync. Если сессии и правда нет,
+// первый дошедший запрос ответит 401 unauthenticated и уведёт на вход.
 async function restore() {
-  let who;
+  let who = null;
   try {
     who = await api.me();
-  } catch {
-    return null;
+  } catch (err) {
+    if (!(err instanceof NetworkError)) {
+      return null;
+    }
   }
   let meta;
   try {
@@ -196,7 +206,10 @@ async function restore() {
   } catch {
     return null;
   }
-  if (!meta.privateKey || meta.nick !== who.nick) {
+  if (!meta.privateKey || !meta.nick) {
+    return null;
+  }
+  if (who !== null && meta.nick !== who.nick) {
     return null;
   }
   return { nick: meta.nick, publicKey: meta.publicKey, fingerprint: meta.fingerprint };
@@ -320,8 +333,12 @@ async function adopt(nick, priv, secret) {
 
 // connect поднимает поток событий и синхронизацию. Отказы разбирает сам
 // sync: экран входа их уже не касается.
+//
+// Подписка на пуши переставляется на текущее устройство сразу после
+// того, как оно завелось: она живёт в браузерном профиле и про смену
+// deviceId сама не узнаёт (ADR-046).
 function connect() {
-  sync.start().catch(() => {});
+  sync.start().then(() => pwa.refresh(state.config?.vapidPublicKey)).catch(() => {});
 }
 
 // raise — автоматическое повышение итераций сразу после входа, молча
@@ -380,6 +397,11 @@ async function deleteAccount(password) {
 }
 
 async function signOut() {
+  // Подписка снимается на сервере, пока сессия ещё жива: устройство
+  // остаётся у аккаунта, и живая строка в базе слала бы пуши прежнего
+  // аккаунта человеку, который вошёл на этом устройстве под другим
+  // (ADR-046).
+  await dropPush();
   try {
     await api.dropSession();
   } catch {
@@ -388,10 +410,29 @@ async function signOut() {
   await forget();
 }
 
+// dropPush снимает подписку у сервера. Отказ ничего не меняет: 401
+// означает, что сессии и так нет, а всё прочее чинится отпиской
+// у push-сервиса и правилом 404/410 (ADR-011).
+async function dropPush() {
+  const device = sync.deviceId();
+  if (!device) {
+    return;
+  }
+  try {
+    await api.clearPush(device);
+  } catch {
+    // Не сняли — снимет push-сервис и правило мёртвых подписок.
+  }
+}
+
 // forget уносит историю: она на этом устройстве единственная копия
-// (docs/storage.md, docs/ui.md).
+// (docs/storage.md, docs/ui.md). Подписка на пуши уходит вместе с ней:
+// она принадлежала устройству этого аккаунта (ADR-046).
 async function forget() {
   sync.stop();
+  // Подписка снимается своим ходом: выход ждёт стирания истории,
+  // а не push-сервиса.
+  pwa.detach().catch(() => {});
   await db.destroy();
   state.me = null;
 }
@@ -407,6 +448,15 @@ function errorText(err) {
 
 async function boot() {
   db.persist();
+  // Service worker ставится с первой секунды: кэш оболочки нужен и до
+  // входа, а пуши приходят в него же (ADR-023). Отказ ничего не ломает.
+  pwa.register();
+  // Первое успешно отправленное сообщение за всю историю устройства —
+  // единственный повод спросить разрешение на уведомления (ADR-011);
+  // «один раз» считает pwa.js.
+  sync.onSent(() => {
+    pwa.askOnce(state.config?.vapidPublicKey).catch(() => {});
+  });
   // Обработчик ставится раньше первого запроса: 401 unauthenticated
   // на любом из них — на экран входа, IndexedDB цела.
   api.onSessionExpired(() => {

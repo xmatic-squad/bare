@@ -80,11 +80,6 @@ func TestDevices(t *testing.T) {
 	if list[0].Current || !list[1].Current {
 		t.Errorf("текущее устройство второй сессии: %+v", list)
 	}
-
-	// Push-подписка — этап 4: пути ещё нет, а неизвестный путь отвечает
-	// 404 not_found (ADR-026).
-	expect(t, e.do(http.MethodPut, "/api/devices/"+id+"/push", map[string]any{}, with(c)),
-		http.StatusNotFound, "not_found")
 }
 
 // Занятый чужим идентификатор — 409: клиент берёт новый (ADR-017).

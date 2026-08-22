@@ -165,6 +165,17 @@ export function removeDevice(id) {
   return request("DELETE", `/api/devices/${encodeURIComponent(id)}`);
 }
 
+// setPush и clearPush — push-подписка устройства (ADR-023). Подписка
+// принадлежит устройству, поэтому устройство идёт и в пути, и в заголовке:
+// чужому подписку не поставить (docs/protocol.md, «Устройства»).
+export function setPush(device, subscription) {
+  return request("PUT", `/api/devices/${encodeURIComponent(device)}/push`, { subscription }, { device });
+}
+
+export function clearPush(device) {
+  return request("DELETE", `/api/devices/${encodeURIComponent(device)}/push`, undefined, { device });
+}
+
 // --- контакты ----------------------------------------------------------
 
 export function contacts() {

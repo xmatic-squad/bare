@@ -16,6 +16,12 @@ type Config struct {
 	VAPIDPrivate string // BARE_VAPID_PRIVATE
 	VAPIDSubject string // BARE_VAPID_SUBJECT
 	InviteCode   string // BARE_INVITE_CODE — пусто означает открытую регистрацию
+
+	// PushLocal разрешает отправку пушей на непубличные адреса. Из
+	// окружения не читается и в работе всегда false: сервер ходит
+	// только по публичным адресам (ADR-047). Поле существует ради
+	// тестов, где push-сервис вендора подменён сервером на 127.0.0.1.
+	PushLocal bool
 }
 
 // Значения по умолчанию — локальный запуск без окружения.

@@ -115,7 +115,7 @@ meta        key: string → value
   deviceId, nick, publicKey (JWK), fingerprint,
   privateKey (CryptoKey ECDH, non-extractable),
   accountSecret (CryptoKey HKDF, non-extractable),
-  notificationsAsked (bool), installBannerDismissed (bool)
+  notificationsAsked (bool), notificationsOff (bool), installBannerDismissed (bool)
 
 chats       key: id                      // "dm:<peer>" | "room:<roomId>"
   {id, type: "dm"|"room", title, peer?, roomId?, owner?, members?: nick[],

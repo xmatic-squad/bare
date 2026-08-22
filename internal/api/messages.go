@@ -8,6 +8,7 @@ import (
 
 	"github.com/xmatic-squad/bare/internal/auth"
 	"github.com/xmatic-squad/bare/internal/hub"
+	"github.com/xmatic-squad/bare/internal/push"
 	"github.com/xmatic-squad/bare/internal/store"
 )
 
@@ -76,22 +77,29 @@ func (s *server) sendMessage(w http.ResponseWriter, r *http.Request) {
 
 	sess, _ := auth.From(r)
 	room := in.To.Room != ""
+	// Заголовок и адрес чата для пуша: сервер собирает их из того, что
+	// и так знает, — из ников и имени комнаты (ADR-023).
+	var signal push.Payload
 	if room {
-		member, knownKey, err := s.st.RoomAccess(r.Context(), in.To.Room, sess.Nick, in.KeyID)
+		access, err := s.st.RoomAccess(r.Context(), in.To.Room, sess.Nick, in.KeyID)
 		if err != nil {
 			s.internal(w, r, err)
 			return
 		}
-		if !member {
+		if !access.Member {
 			Error(w, http.StatusForbidden, "not_member", "вы не участник комнаты")
 			return
 		}
-		if !knownKey {
+		if !access.KnownKey {
 			Error(w, http.StatusBadRequest, "unknown_key", "у комнаты нет такого ключа")
 			return
 		}
-	} else if _, ok := s.peer(w, r, in.To.DM, sess.Nick); !ok {
-		return
+		signal = push.Payload{Title: "#" + access.Name, Chat: "room:" + in.To.Room}
+	} else {
+		if _, ok := s.peer(w, r, in.To.DM, sess.Nick); !ok {
+			return
+		}
+		signal = push.Payload{Title: "@" + sess.Nick, Chat: "dm:" + sess.Nick}
 	}
 
 	if wait, ok := s.msgs.take(sess.Nick, now); !ok {
@@ -122,7 +130,7 @@ func (s *server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		Envelope: string(raw),
 		Now:      env.TS,
 	}
-	var devices []string
+	var devices []store.Target
 	if room {
 		devices, err = s.st.DeliverRoom(r.Context(), delivery)
 	} else {
@@ -133,14 +141,37 @@ func (s *server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Очередь уже записана: подключённое устройство получает конверт
-	// сразу, остальные — при подключении. Пуши — этап 4.
-	for _, id := range devices {
-		s.hub.Send(id, hub.Event{Name: "msg", Data: string(raw)})
+	// сразу, остальные — при подключении.
+	for _, target := range devices {
+		s.hub.Send(target.ID, hub.Event{Name: "msg", Data: string(raw)})
 	}
+	// Пуш — побочный эффект доставки, а не её часть: конверт уже
+	// в очереди, и ответ на запрос отправку пуша не ждёт (ADR-023).
+	s.push.Send(s.silent(devices, env.From), signal)
 	writeJSON(w, http.StatusAccepted, struct {
 		ID string `json:"id"`
 		TS int64  `json:"ts"`
 	}{env.ID, env.TS})
+}
+
+// silent — устройства, которым нужен пуш: чужие (устройства отправителя
+// пуша не получают, ADR-045), подписанные и молчащие — те, что не держат
+// поток событий (ADR-023).
+//
+// Устройство без подписки отсеивается здесь: отправить ему нечего,
+// а место в очереди отправки оно заняло бы (ADR-048). Проверка на
+// подключение — ранний отсев: решает её повтор в момент захвата права
+// на пуш, потому что между этой строкой и отправкой устройство успевает
+// подключиться (ADR-023).
+func (s *server) silent(targets []store.Target, from string) []push.Target {
+	var out []push.Target
+	for _, target := range targets {
+		if target.Nick == from || !target.HasPush || s.hub.Connected(target.ID) {
+			continue
+		}
+		out = append(out, push.Target{Device: target.ID, Owner: target.Nick})
+	}
+	return out
 }
 
 // checkForm проверяет форму полей конверта (docs/crypto.md, «Что сервер

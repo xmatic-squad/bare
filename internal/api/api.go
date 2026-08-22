@@ -16,6 +16,7 @@ import (
 	"github.com/xmatic-squad/bare/internal/auth"
 	"github.com/xmatic-squad/bare/internal/config"
 	"github.com/xmatic-squad/bare/internal/hub"
+	"github.com/xmatic-squad/bare/internal/push"
 	"github.com/xmatic-squad/bare/internal/store"
 )
 
@@ -34,27 +35,39 @@ type server struct {
 	cfg  *config.Config
 	st   *store.Store
 	hub  *hub.Hub
+	push *push.Sender
 	msgs *buckets
 	logw io.Writer
 }
 
-// Handler — обработчик всех маршрутов и живые SSE-потоки за ним.
+// Handler — обработчик всех маршрутов, живые SSE-потоки и очередь пушей
+// за ним.
 type Handler struct {
 	http.Handler
-	hub *hub.Hub
+	hub  *hub.Hub
+	push *push.Sender
 }
 
-// Close закрывает открытые потоки событий. Без него остановка сервера
-// ждала бы, пока клиенты уйдут сами: у потока нет конца (ADR-004).
-func (h *Handler) Close() { h.hub.CloseAll() }
+// Close закрывает открытые потоки событий и останавливает отправку
+// пушей. Без него остановка сервера ждала бы, пока клиенты уйдут сами:
+// у потока нет конца (ADR-004).
+func (h *Handler) Close() {
+	h.hub.CloseAll()
+	h.push.Close()
+}
 
 // New собирает обработчик: /api/, /healthz, всё остальное — статика.
 // logw — куда писать строки запросов и причины отказов; nil отключает лог.
 func New(cfg *config.Config, st *store.Store, static http.Handler, logw io.Writer) *Handler {
+	// Отправитель пушей спрашивает у hub, подключено ли устройство:
+	// решение «пуш только молчащему» принимается в момент захвата права
+	// на него, а не при постановке в очередь (ADR-023).
+	live := hub.New()
 	s := &server{
 		cfg:  cfg,
 		st:   st,
-		hub:  hub.New(),
+		hub:  live,
+		push: push.New(cfg, st, live.Connected, logw),
 		msgs: newBuckets(messagesPerMinute, messagesBurst),
 		logw: logw,
 	}
@@ -79,6 +92,8 @@ func New(cfg *config.Config, st *store.Store, static http.Handler, logw io.Write
 	mux.Handle("POST /api/devices", private(http.HandlerFunc(s.createDevice)))
 	mux.Handle("GET /api/devices", private(http.HandlerFunc(s.devices)))
 	mux.Handle("DELETE /api/devices/{id}", private(http.HandlerFunc(s.deleteDevice)))
+	mux.Handle("PUT /api/devices/{id}/push", private(http.HandlerFunc(s.setPush)))
+	mux.Handle("DELETE /api/devices/{id}/push", private(http.HandlerFunc(s.deletePush)))
 
 	mux.Handle("GET /api/contacts", private(http.HandlerFunc(s.contacts)))
 	mux.Handle("POST /api/contacts", private(http.HandlerFunc(s.addContact)))
@@ -103,6 +118,7 @@ func New(cfg *config.Config, st *store.Store, static http.Handler, logw io.Write
 	return &Handler{
 		Handler: logging(logw, headers(auth.Origin(cfg.Origin, fail)(limitBody(mux)))),
 		hub:     s.hub,
+		push:    s.push,
 	}
 }
 

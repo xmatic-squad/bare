@@ -59,6 +59,12 @@ func newEnv(t *testing.T) *env { return invited(t, "") }
 // invited — сервер на временной базе; непустой code включает инвайты.
 func invited(t *testing.T, code string) *env {
 	t.Helper()
+	return envWith(t, func(cfg *config.Config) { cfg.InviteCode = code })
+}
+
+// envWith — сервер на временной базе; tweak правит конфигурацию до старта.
+func envWith(t *testing.T, tweak func(*config.Config)) *env {
+	t.Helper()
 	static, err := web.New()
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
@@ -74,10 +80,14 @@ func invited(t *testing.T, code string) *env {
 		DB:          "bare.db",
 		Origin:      origin,
 		VAPIDPublic: "vapid",
-		InviteCode:  code,
 	}
+	tweak(cfg)
 	e := &env{t: t, st: st, log: &syncLog{}}
-	e.h = api.New(cfg, st, static, e.log)
+	h := api.New(cfg, st, static, e.log)
+	// Обработчик закрывается раньше базы: отправщики пушей дописывают
+	// начатое, а база им ещё нужна.
+	t.Cleanup(h.Close)
+	e.h = h
 	return e
 }
 

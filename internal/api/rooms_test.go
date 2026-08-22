@@ -225,6 +225,17 @@ func TestCreateRoomRejects(t *testing.T) {
 		{"имя длиннее 64", func(m map[string]any) {
 			m["name"] = strings.Repeat("я", 65)
 		}, http.StatusBadRequest, "invalid", "name"},
+		// Имя уходит в заголовок системного уведомления (ADR-045):
+		// ни перевода строки, ни разворота текста в нём быть не должно.
+		{"имя с переводом строки", func(m map[string]any) {
+			m["name"] = "общая\nсрочно: перезагрузите телефон"
+		}, http.StatusBadRequest, "invalid", "name"},
+		{"имя с bidi", func(m map[string]any) {
+			m["name"] = "общая\u202eяандекс"
+		}, http.StatusBadRequest, "invalid", "name"},
+		{"имя из пробелов", func(m map[string]any) {
+			m["name"] = "   "
+		}, http.StatusBadRequest, "invalid", "name"},
 		{"кривой keyId", func(m map[string]any) { m["keyId"] = "dm" }, http.StatusBadRequest, "invalid", "keyId"},
 		{"нет ключа", func(m map[string]any) { m["keys"] = []any{} }, http.StatusBadRequest, "keys_mismatch", ""},
 		{"ключ чужому", func(m map[string]any) {

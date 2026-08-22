@@ -12,6 +12,11 @@ export function wide() {
   return matchMedia(DESKTOP).matches;
 }
 
+// INSTALL_IOS — текст про установку на iOS. Он один и тот же в баннере
+// над списком чатов и в настройках (docs/ui.md), поэтому и живёт в одном
+// месте.
+export const INSTALL_IOS = "уведомления на iOS работают только у установленного приложения: поделиться → на экран «домой»";
+
 export function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) {

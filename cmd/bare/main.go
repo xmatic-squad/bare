@@ -117,6 +117,10 @@ func serve() error {
 		}
 	}()
 	fmt.Printf("bare слушает %s, origin %s\n", ln.Addr(), cfg.Origin)
+	// Молчащие пуши — худший вид поломки: снаружи она не видна вовсе.
+	if cfg.VAPIDPublic == "" || cfg.VAPIDPrivate == "" || cfg.VAPIDSubject == "" {
+		fmt.Println("bare: пуши выключены — нужны BARE_VAPID_PUBLIC, BARE_VAPID_PRIVATE и BARE_VAPID_SUBJECT")
+	}
 
 	select {
 	case err := <-failed:

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/xmatic-squad/bare/internal/auth"
@@ -379,7 +380,32 @@ func uniqueNicks(list []string) ([]string, bool) {
 	return out, true
 }
 
-// validRoomName — имя комнаты: непустое, до 64 символов (ADR-021).
+// validRoomName — имя комнаты: непустое, до 64 рун, без управляющих
+// символов, без переопределений направления письма и не из одних
+// пробелов (ADR-021).
+//
+// Форма строже, чем «до 64 символов», с этапа 4: имя комнаты уходит
+// в заголовок системного уведомления (ADR-045), а туда нельзя ни перевод
+// строки, ни разворот текста — на экране блокировки такое имя выглядит
+// не строкой списка, а сообщением от системы.
 func validRoomName(name string) bool {
-	return name != "" && utf8.RuneCountInString(name) <= maxRoomName
+	if name == "" || utf8.RuneCountInString(name) > maxRoomName {
+		return false
+	}
+	blank := true
+	for _, r := range name {
+		if unicode.IsControl(r) || bidi(r) {
+			return false
+		}
+		if !unicode.IsSpace(r) {
+			blank = false
+		}
+	}
+	return !blank
+}
+
+// bidi — переопределения направления письма: U+202A…U+202E и U+2066…U+2069.
+// Они переставляют текст на экране местами, оставаясь невидимыми.
+func bidi(r rune) bool {
+	return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
 }

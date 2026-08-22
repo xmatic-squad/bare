@@ -501,18 +501,33 @@ func (s *Store) DeleteRoom(ctx context.Context, roomID, owner string) (RoomChang
 	return change, nil
 }
 
-// RoomAccess — что сервер проверяет перед отправкой в комнату
-// (docs/protocol.md, «Сообщения»). keyId считается ключом комнаты, если
-// есть хоть одна строка room_keys с таким key_id (docs/storage.md).
-func (s *Store) RoomAccess(ctx context.Context, roomID, nick, keyID string) (member, knownKey bool, err error) {
-	err = s.db.QueryRowContext(ctx, `
-		SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = ? AND nick = ?),
-		       EXISTS(SELECT 1 FROM room_keys WHERE room_id = ? AND key_id = ?)`,
-		roomID, nick, roomID, keyID).Scan(&member, &knownKey)
-	if err != nil {
-		return false, false, fmt.Errorf("store: доступ к комнате: %w", err)
+// Access — что сервер знает о комнате перед отправкой в неё
+// (docs/protocol.md, «Сообщения»). Имя нужно заголовку пуша: «#имя
+// комнаты» (ADR-023).
+type Access struct {
+	Member   bool
+	KnownKey bool
+	Name     string
+}
+
+// RoomAccess — что сервер проверяет перед отправкой в комнату. keyId
+// считается ключом комнаты, если есть хоть одна строка room_keys с таким
+// key_id (docs/storage.md). Несуществующая комната отвечает пустым
+// Access: снаружи она неотличима от чужой.
+func (s *Store) RoomAccess(ctx context.Context, roomID, nick, keyID string) (Access, error) {
+	var a Access
+	err := s.db.QueryRowContext(ctx, `
+		SELECT r.name,
+		       EXISTS(SELECT 1 FROM room_members WHERE room_id = r.id AND nick = ?),
+		       EXISTS(SELECT 1 FROM room_keys WHERE room_id = r.id AND key_id = ?)
+		FROM rooms r WHERE r.id = ?`, nick, keyID, roomID).Scan(&a.Name, &a.Member, &a.KnownKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Access{}, nil
 	}
-	return member, knownKey, nil
+	if err != nil {
+		return Access{}, fmt.Errorf("store: доступ к комнате: %w", err)
+	}
+	return a, nil
 }
 
 // currentKeysQuery — текущий ключ участника: строка room_keys с максимальным

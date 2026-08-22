@@ -127,3 +127,81 @@ func (s *Store) TouchDevice(ctx context.Context, id string, now int64) error {
 	}
 	return nil
 }
+
+// Push-подписка принадлежит устройству (ADR-023). Сервер хранит её как
+// непрозрачный JSON: разбирает его только отправитель пушей.
+
+// SetPush ставит подписку устройства и сбрасывает неотработанный пуш:
+// устройство снова готово его принять (ADR-023). Первое значение — было
+// ли такое устройство у этого пользователя.
+func (s *Store) SetPush(ctx context.Context, id, nick, subscription string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE devices SET push_subscription = ?, push_pending = 0
+		WHERE id = ? AND nick = ?`, subscription, id, nick)
+	if err != nil {
+		return false, fmt.Errorf("store: push-подписка: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: push-подписка: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ClearPush снимает подписку устройства. Подписки не было — это не
+// ошибка: снимать нечего.
+func (s *Store) ClearPush(ctx context.Context, id, nick string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE devices SET push_subscription = NULL WHERE id = ? AND nick = ?`, id, nick)
+	if err != nil {
+		return false, fmt.Errorf("store: снятие push-подписки: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: снятие push-подписки: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ClaimPush забирает право на пуш: устройству с подпиской и без
+// неотработанного пуша ставит push_pending = 1 и отдаёт подписку.
+// Второе значение — досталось ли право.
+//
+// Захват и проверка — один запрос: два сообщения подряд приходят
+// в разных горутинах, а молчащее устройство получает один пуш, не ленту
+// (ADR-023). Проигравший запрос уходит ни с чем.
+func (s *Store) ClaimPush(ctx context.Context, id string) (string, bool, error) {
+	var subscription string
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE devices SET push_pending = 1
+		WHERE id = ? AND push_pending = 0 AND push_subscription IS NOT NULL
+		RETURNING push_subscription`, id).Scan(&subscription)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: захват пуша: %w", err)
+	}
+	return subscription, true, nil
+}
+
+// ReleasePush возвращает право на пуш: отправка не состоялась, значит
+// и неотработанного пуша у устройства нет. Иначе одна ошибка push-сервиса
+// затыкала бы уведомления устройства до следующего подключения по SSE.
+func (s *Store) ReleasePush(ctx context.Context, id string) error {
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE devices SET push_pending = 0 WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("store: возврат пуша: %w", err)
+	}
+	return nil
+}
+
+// DropPush снимает мёртвую подписку: push-сервис ответил 404 или 410
+// (ADR-011). Неотработанного пуша заодно не остаётся — он никуда не ушёл.
+func (s *Store) DropPush(ctx context.Context, id string) error {
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE devices SET push_subscription = NULL, push_pending = 0 WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("store: снятие мёртвой push-подписки: %w", err)
+	}
+	return nil
+}

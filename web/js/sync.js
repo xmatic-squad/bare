@@ -338,6 +338,17 @@ export function deviceId() {
   return state.device;
 }
 
+// onSent ставит обработчик успешной отправки: по первой из них клиент
+// один раз просит разрешение на уведомления (docs/ui.md, «Уведомления»).
+// «Первой за всю историю устройства» это делает не здесь: транспорт
+// не знает ни про разрешения, ни про то, о чём уже спрашивали. Ставит
+// обработчик main.js.
+let sentHandler = () => {};
+
+export function onSent(handler) {
+  sentHandler = handler;
+}
+
 // --- устройство ---------------------------------------------------------
 
 // ensureDevice — deviceId устройства: 16 случайных байт base64url,
@@ -1518,6 +1529,13 @@ async function post(message, peer, roomId) {
     const sent = { ...message, status: "sent", ts: answer?.ts ?? message.ts };
     await db.saveMessages({ messages: [sent], me: state.nick });
     notify([sent]);
+    // Сообщение ушло: обработчик решает, спрашивать ли разрешение
+    // на уведомления. Отправку он не задерживает и сорвать не может.
+    try {
+      sentHandler();
+    } catch {
+      // Дело обработчика; отправка состоялась.
+    }
     return null;
   } catch (err) {
     // Ответ с кодом — то же доказательство, что запрос дошёл, что и 202:

@@ -75,6 +75,14 @@ func (h *Hub) Send(device string, ev Event) {
 	}
 }
 
+// Connected — держит ли устройство открытый поток. Пуш уходит только
+// молчащему устройству (ADR-023).
+func (h *Hub) Connected(device string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.streams[device] != nil
+}
+
 // Close закрывает поток устройства: устройство удалили (docs/protocol.md,
 // «Устройства»).
 func (h *Hub) Close(device string) {
