@@ -98,8 +98,11 @@ const bus = new EventTarget();
 //
 //   "net"      {online}                — доходят ли запросы до сервера
 //   "chats"    {}                      — список чатов изменился
-//   "messages" {chatId, ids, removed}  — в чате появились, изменились
-//                                        или исчезли сообщения
+//   "messages" {chatId, ids, removed, whole}
+//                                      — в чате появились, изменились
+//                                        или исчезли сообщения; whole
+//                                        означает «перечитай ленту
+//                                        целиком», без перечня (ADR-050)
 //   "peers"    {nick}                  — доверие к ключу ника изменилось:
 //                                        появился pending или его подтвердили
 //   "rooms"    {id}                    — комната изменилась: имя, состав,
@@ -172,6 +175,20 @@ function announcePeer(nick) {
 function announceRoom(id) {
   emit("rooms", { id });
   share({ kind: "rooms", id, blocked: needsTrust(id) });
+}
+
+// imported — импорт архива влил историю в базу (ADR-050). Перечня
+// добавленного в событии нет: сообщений бывает несколько тысяч и они
+// старые, поэтому лента перечитывается целиком, а не строка за строкой.
+// Запись сделал export.js, здесь остаётся поднять экраны — свои
+// и соседних вкладок (ADR-035).
+export function imported(chatIds) {
+  const details = chatIds.map((chatId) => ({ chatId, ids: [], removed: [], whole: true }));
+  for (const detail of details) {
+    emit("messages", detail);
+  }
+  emit("chats");
+  share({ kind: "changed", details, settled: [] });
 }
 
 // --- соседние вкладки ---------------------------------------------------

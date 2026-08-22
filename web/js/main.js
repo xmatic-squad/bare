@@ -62,6 +62,8 @@ const ctx = {
   },
   errorText,
   ensureConfig,
+  devices,
+  removeDevice,
   signUp,
   signIn,
   changePassword,
@@ -224,6 +226,34 @@ async function storedNick() {
   } catch {
     return null;
   }
+}
+
+// --- устройства ---------------------------------------------------------
+
+// devices — устройства аккаунта для настроек (docs/protocol.md,
+// «Устройства»). Своё сервер помечает по сессии; заодно сверяем
+// с устройством этой вкладки: сессия привязывается к устройству
+// в POST /api/devices, и до него current не проставлен (ADR-017).
+async function devices() {
+  const list = await api.devices();
+  const mine = sync.deviceId();
+  if (!Array.isArray(list)) {
+    return [];
+  }
+  return list
+    .filter((item) => item !== null && typeof item === "object" && typeof item.id === "string")
+    .map((item) => ({
+      id: item.id,
+      createdAt: item.createdAt,
+      current: item.current === true || (mine !== null && item.id === mine),
+    }));
+}
+
+// removeDevice — «удалить» в настройках: очередь, подписка и сессии
+// устройства уходят вместе с ним. Своё устройство сюда не приходит —
+// его отцепляет «выйти» (ADR-052).
+function removeDevice(id) {
+  return api.removeDevice(id);
 }
 
 // --- аккаунт -----------------------------------------------------------

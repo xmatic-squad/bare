@@ -105,6 +105,20 @@ export function fingerprintGroups(fingerprint) {
   return fingerprint.match(/.{1,4}/g) ?? [];
 }
 
+// sameBytes — побайтное сравнение. Постоянного времени здесь не нужно:
+// сравниваются отпечатки публичных ключей, а они не секрет.
+export function sameBytes(a, b) {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // wipe затирает сырые байты, когда они больше не нужны.
 export function wipe(bytes) {
   if (bytes instanceof Uint8Array) {
@@ -193,10 +207,17 @@ export async function importSecret(bytes) {
   return subtle.importKey("raw", bytes, "HKDF", false, ["deriveKey", "deriveBits"]);
 }
 
-// fingerprint — SHA-256 несжатой точки публичного ключа, 64 hex строчными.
-export async function fingerprint(publicKey) {
+// fingerprintBytes — отпечаток сырыми байтами: SHA-256 несжатой точки
+// публичного ключа, 32 байта. В заголовке архива лежат именно они,
+// а не hex-строка (ADR-014).
+export async function fingerprintBytes(publicKey) {
   const raw = await subtle.exportKey("raw", publicKey);
-  return hex(await subtle.digest("SHA-256", raw));
+  return new Uint8Array(await subtle.digest("SHA-256", raw));
+}
+
+// fingerprint — тот же отпечаток для человека: 64 hex строчными.
+export async function fingerprint(publicKey) {
+  return hex(await fingerprintBytes(publicKey));
 }
 
 export async function fingerprintOf(jwk) {
@@ -423,4 +444,115 @@ export async function openMessage(key, { id, chat, from, keyId, iv, ct }) {
     throw new Error("в сообщении нет текста");
   }
   return parsed.t;
+}
+
+// --- архив .bare -------------------------------------------------------
+
+// Формат файла — docs/crypto.md, «Экспорт .bare»:
+//
+//   header = "BARE" (4) || version u8 = 1 || salt (16) || fingerprint (32)
+//            || iv (12)                                          // 65 байт
+//   file   = header || AES-GCM(exportKey, iv, payload, AAD = header)
+//
+// Заголовок открыт и целиком входит в AAD: подмена любого его байта ломает
+// расшифровку. Ника владельца в нём нет — это лишняя утечка (ADR-014).
+
+const EXPORT_INFO = "bare-export-v1";
+const MAGIC = "BARE";
+
+// ARCHIVE_VERSION — версия формата файла. Не версия полезной нагрузки:
+// та лежит внутри, полем v, и считается отдельно.
+const ARCHIVE_VERSION = 1;
+
+const SALT_LEN = 16;
+const FP_LEN = 32;
+const MAGIC_AT = 0;
+const VERSION_AT = 4;
+const SALT_AT = 5;
+const FP_AT = SALT_AT + SALT_LEN;
+const IV_AT = FP_AT + FP_LEN;
+
+// HEADER_LEN — 65 байт, ровно как в docs/crypto.md.
+const HEADER_LEN = IV_AT + IV_LEN;
+
+// Тег AES-GCM — 16 байт: короче шифротекста не бывает даже у пустого архива.
+const TAG_LEN = 16;
+
+// archiveKey — ключ одного экспорта: HKDF из секрета аккаунта со случайной
+// солью (ADR-014). Секрет — non-extractable CryptoKey типа HKDF; сырых байт
+// у клиента нет и быть не должно.
+function archiveKey(secret, salt) {
+  return subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt, info: utf8(EXPORT_INFO) },
+    secret,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+function archiveHeader(salt, fingerprint, iv) {
+  const header = new Uint8Array(HEADER_LEN);
+  header.set(utf8(MAGIC), MAGIC_AT);
+  header[VERSION_AT] = ARCHIVE_VERSION;
+  header.set(salt, SALT_AT);
+  header.set(fingerprint, FP_AT);
+  header.set(iv, IV_AT);
+  return header;
+}
+
+// sealArchive шифрует полезную нагрузку и собирает файл целиком.
+// fingerprint — 32 сырых байта отпечатка владельца.
+export async function sealArchive(secret, fingerprint, payload) {
+  if (fingerprint.length !== FP_LEN) {
+    throw new Error("отпечаток — не 32 байта");
+  }
+  const salt = random(SALT_LEN);
+  const iv = random(IV_LEN);
+  const header = archiveHeader(salt, fingerprint, iv);
+  const ct = await subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: header },
+    await archiveKey(secret, salt),
+    payload,
+  );
+  const file = new Uint8Array(HEADER_LEN + ct.byteLength);
+  file.set(header);
+  file.set(new Uint8Array(ct), HEADER_LEN);
+  return file;
+}
+
+// parseArchive читает заголовок, ничего не расшифровывая: отпечаток
+// владельца сверяется до вывода ключа (ADR-014). Чужая магия, чужая версия
+// и файл короче заголовка с тегом — null.
+export function parseArchive(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < HEADER_LEN + TAG_LEN) {
+    return null;
+  }
+  const magic = utf8(MAGIC);
+  for (let i = 0; i < magic.length; i += 1) {
+    if (bytes[MAGIC_AT + i] !== magic[i]) {
+      return null;
+    }
+  }
+  if (bytes[VERSION_AT] !== ARCHIVE_VERSION) {
+    return null;
+  }
+  return {
+    header: bytes.subarray(0, HEADER_LEN),
+    salt: bytes.subarray(SALT_AT, FP_AT),
+    fingerprint: bytes.subarray(FP_AT, IV_AT),
+    iv: bytes.subarray(IV_AT, HEADER_LEN),
+    ct: bytes.subarray(HEADER_LEN),
+  };
+}
+
+// openArchive расшифровывает разобранный файл. Ошибка AEAD — единственный
+// признак порчи: заголовок целиком в AAD, а всё остальное под тегом.
+export async function openArchive(secret, archive) {
+  const plain = await subtle.decrypt(
+    { name: "AES-GCM", iv: archive.iv, additionalData: archive.header },
+    await archiveKey(secret, archive.salt),
+    archive.ct,
+  );
+  return new Uint8Array(plain);
 }

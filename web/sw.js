@@ -7,7 +7,7 @@
 // Имя кэша содержит версию; версия — константа, она меняется при релизе,
 // и старые кэши уходят в activate.
 
-const VERSION = "v2";
+const VERSION = "v3";
 const CACHE = `bare-${VERSION}`;
 
 // Оболочка — всё, из чего клиент поднимается без сети. Список явный:
@@ -20,6 +20,7 @@ const SHELL = [
   "/js/api.js",
   "/js/crypto.js",
   "/js/db.js",
+  "/js/export.js",
   "/js/main.js",
   "/js/pwa.js",
   "/js/sync.js",

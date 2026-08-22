@@ -1,6 +1,7 @@
 // Экран входа и регистрации — docs/ui.md, «Вход и регистрация».
 
-import { clear, confirmPanel, el, field, mark, message, setError, setNote } from "./dom.js";
+import { exportHistory } from "../export.js";
+import { EXPORT_FAILED, clear, confirmPanel, el, field, mark, message, setError, setNote } from "./dom.js";
 
 const HINT = "пароль — это ключ шифрования, а не запись в базе. восстановления нет. "
   + "не короче 12 символов; лучше — фраза из нескольких слов.";
@@ -58,8 +59,11 @@ function screen(ctx, view, paint) {
   form.append(submit);
 
   // На устройстве могут лежать ключи другого ника: вход под этим сотрёт
-  // историю прежнего, поэтому сначала подтверждение (ADR-029).
-  const wipe = confirmPanel("", "удалить");
+  // историю прежнего, поэтому сначала подтверждение (ADR-029). История
+  // на устройстве — единственная копия, и подтверждение предлагает сначала
+  // сохранить её: секрет прежнего аккаунта ещё здесь, экспорту сессия
+  // не нужна (ADR-014).
+  const wipe = confirmPanel("", "удалить", "экспортировать");
   form.append(wipe.root);
 
   const note = message();
@@ -101,6 +105,22 @@ function screen(ctx, view, paint) {
     wipe.root.hidden = true;
     submit.hidden = false;
   };
+  // Экспорт подтверждение не закрывает: архив скачался, а входить или нет —
+  // отдельное решение.
+  wipe.extra.addEventListener("click", async () => {
+    if (wipe.extra.disabled) {
+      return;
+    }
+    wipe.extra.disabled = true;
+    fail("");
+    try {
+      await exportHistory();
+    } catch {
+      fail(EXPORT_FAILED);
+    } finally {
+      wipe.extra.disabled = false;
+    }
+  });
   wipe.no.addEventListener("click", () => {
     hideWipe();
     submit.focus();
@@ -151,7 +171,8 @@ function screen(ctx, view, paint) {
       wipe.text.textContent = `на этом устройстве история @${other}. вход под другим ником удалит её.`;
       wipe.root.hidden = false;
       submit.hidden = true;
-      wipe.yes.focus();
+      // Фокус — на «экспортировать»: с него безопасно начинать.
+      wipe.extra.focus();
       return;
     }
     await run();

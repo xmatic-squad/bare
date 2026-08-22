@@ -34,6 +34,11 @@ const NAME_IN_HINT = 12;
 // сообщение подматывает ленту только тогда, когда он и так смотрит конец.
 const NEAR_BOTTOM = 80;
 
+// Насколько близко к верхнему краю берётся следующая страница. Запас
+// в экран: страница успевает приехать до того, как человек упрётся
+// в край (ADR-053).
+const NEAR_TOP = 200;
+
 // renderChat рисует чат в root и отдаёт отписку.
 export function renderChat(root, ctx, chatId) {
   const view = {
@@ -53,9 +58,19 @@ export function renderChat(root, ctx, chatId) {
     // Комнаты у нас больше нет: вышли сами, убрал владелец, комната
     // удалена. Ввод заблокирован, лента остаётся (ADR-044).
     gone: false,
-    // Лента: записи по возрастанию id и их строки в разметке.
+    // Лента: записи по возрастанию id и их разметка — строка и её
+    // разделители, id → {node, marks}.
     items: [],
     nodes: new Map(),
+    // Выше загруженного есть ещё сообщения: последняя страница пришла
+    // целой (ADR-053).
+    more: false,
+    // Страница уже едет: событий scroll приходит много подряд.
+    loading: false,
+    // Граница «новых» на момент открытия: было ли непрочитанное и докуда
+    // читали. Сама граница считается по всему загруженному — подгрузка
+    // вверх двигает её выше (ADR-053).
+    mark: { unread: false, bound: null },
     // Граница «новых»: первый непрочитанный на момент открытия.
     newId: null,
     chain: Promise.resolve(),
@@ -67,6 +82,12 @@ export function renderChat(root, ctx, chatId) {
   view.body = el("div", "grid");
   view.body.setAttribute("aria-live", "polite");
   view.feed.append(view.body);
+  // Прокрутка к верхнему краю берёт следующую страницу (ADR-053).
+  view.feed.addEventListener("scroll", () => {
+    if (view.feed.scrollTop <= NEAR_TOP) {
+      pull(view);
+    }
+  });
   root.append(view.feed);
 
   root.append(composer(view));
@@ -258,25 +279,131 @@ async function load(view) {
     return;
   }
   view.items = list;
-  view.newId = firstUnread(record, list, view.me);
+  // Страница пришла целой — выше есть ещё (ADR-053).
+  view.more = list.length >= sync.PAGE;
+  view.mark = { unread: (record?.unread ?? 0) > 0, bound: record?.lastReadId ?? null };
+  view.newId = firstUnread(view.mark, list, view.me);
   paint(view, true);
   // Фокус в строку ввода при открытии чата на десктопе (docs/ui.md,
   // «Доступность»); на мобильном это подняло бы клавиатуру на весь экран.
   if (wide()) {
     view.field.focus();
   }
+  reach(view);
   await read(view);
 }
 
 // firstUnread — граница «новых»: первый чужой непрочитанный. Своё
 // непрочитанным не бывает, поэтому и границей не становится.
-function firstUnread(record, list, me) {
-  if (!record || record.unread <= 0) {
+//
+// Считается по всему загруженному: чат с сотней непрочитанных открывается
+// последней страницей, и первый из них лежит выше — граница находится,
+// когда до него домотают (ADR-053).
+function firstUnread(mark, list, me) {
+  if (!mark.unread) {
     return null;
   }
-  const bound = record.lastReadId;
-  const found = list.find((m) => m.from !== me && (!bound || m.id > bound));
+  const found = list.find((m) => m.from !== me && (!mark.bound || m.id > mark.bound));
   return found ? found.id : null;
+}
+
+// --- страницы -----------------------------------------------------------
+
+// pull просит следующую страницу. Событий scroll приходит много подряд,
+// поэтому вход закрывается до постановки в очередь.
+function pull(view) {
+  if (!view.more || view.loading || !view.alive) {
+    return;
+  }
+  view.loading = true;
+  run(view, () => older(view));
+}
+
+// older дописывает страницу сверху: курсор по индексу «chat» назад
+// от самого старого загруженного, по 50 (docs/storage.md, ADR-053).
+// Страница короче полной означает, что выше ничего нет.
+async function older(view) {
+  const first = view.items[0] ?? null;
+  try {
+    const list = await sync.messagesBefore(view.chatId, first ? first.id : null);
+    if (!view.alive) {
+      return;
+    }
+    if (list.length < sync.PAGE) {
+      view.more = false;
+    }
+    if (list.length === 0) {
+      return;
+    }
+    view.items = [...list, ...view.items];
+    keep(view, () => grow(view, list, first));
+  } catch {
+    // Базы нет — оставляем то, что уже загружено.
+  } finally {
+    view.loading = false;
+    reach(view);
+  }
+}
+
+// grow дописывает страницу сверху, не пересобирая ленту: нарисованное
+// переживает подгрузку — выделение текста не пропадает, а живая область
+// не зачитывается экранным диктором заново (ADR-053). Заново считаются две
+// строки: та, что держала линию «новые», если граница уехала выше, и бывшая
+// первая — у неё появился сосед сверху, а от соседа зависят разделитель
+// даты и повтор автора.
+function grow(view, list, head) {
+  const was = view.newId;
+  view.newId = firstUnread(view.mark, view.items, view.me);
+  const page = document.createDocumentFragment();
+  let previous = null;
+  for (const record of list) {
+    line(view, record, previous, page);
+    previous = record;
+  }
+  view.body.insertBefore(page, view.body.firstChild);
+  if (was !== null && was !== view.newId && (head === null || was !== head.id)) {
+    const at = view.items.findIndex((m) => m.id === was);
+    if (at > 0) {
+      reline(view, view.items[at], view.items[at - 1]);
+    }
+  }
+  if (head !== null) {
+    reline(view, head, previous);
+  }
+}
+
+// reline перерисовывает одну строку вместе с её разделителями: у неё
+// сменился сосед сверху или уехала линия «новые».
+function reline(view, record, previous) {
+  const old = view.nodes.get(record.id);
+  if (!old) {
+    return;
+  }
+  const next = old.node.nextSibling;
+  for (const node of old.marks) {
+    node.remove();
+  }
+  old.node.remove();
+  const box = document.createDocumentFragment();
+  line(view, record, previous, box);
+  view.body.insertBefore(box, next);
+}
+
+// keep сохраняет расстояние до низа ленты: подгрузка вверх не должна
+// двигать то, что человек читает.
+function keep(view, draw) {
+  const feed = view.feed;
+  const bottom = feed.scrollHeight - feed.scrollTop;
+  draw();
+  feed.scrollTop = feed.scrollHeight - bottom;
+}
+
+// reach берёт следующую страницу, когда прокручивать нечего: лента короче
+// окна, события scroll не будет, а сообщения выше есть.
+function reach(view) {
+  if (view.feed.scrollHeight <= view.feed.clientHeight) {
+    pull(view);
+  }
 }
 
 // read помечает чат прочитанным — после отрисовки: до этого lastReadId
@@ -293,6 +420,13 @@ async function read(view) {
 // перерисовать: лента — живая область, и перерисовка заставила бы
 // экранного диктора зачитать её целиком.
 async function apply(view, detail) {
+  // Импорт архива приносит недостающую историю пачкой и в середину ленты:
+  // перечитать её целиком дешевле, чем вставлять сообщение за сообщением
+  // (ADR-050).
+  if (detail.whole === true) {
+    await load(view);
+    return;
+  }
   const incoming = [];
   for (const id of detail.ids ?? []) {
     let record = null;
@@ -372,35 +506,35 @@ function paint(view, bottom) {
   }
 }
 
-// line дописывает сообщение в конец ленты вместе с разделителями,
-// которые перед ним нужны.
-function line(view, record, previous) {
-  const day = !previous || dayOf(previous.ts) !== dayOf(record.ts);
-  if (day) {
-    view.body.append(divider(label(record.ts), false));
+// line дописывает сообщение в конец parent вместе с разделителями, которые
+// перед ним нужны. Разделители принадлежат строке: подгрузка страницы
+// сверху перерисовывает строку вместе с ними, а не всю ленту.
+function line(view, record, previous, parent = view.body) {
+  const marks = [];
+  if (!previous || dayOf(previous.ts) !== dayOf(record.ts)) {
+    marks.push(divider(label(record.ts), false));
   }
-  const fresh = record.id === view.newId;
-  if (fresh) {
-    view.body.append(divider("новые", true));
+  if (record.id === view.newId) {
+    marks.push(divider("новые", true));
   }
   // Подряд идущие сообщения одного автора — без повтора автора.
-  const first = day || fresh || !previous || previous.from !== record.from;
+  const first = marks.length > 0 || !previous || previous.from !== record.from;
   const node = el("div", first ? "line is-head" : "line");
   node.append(author(view, record, first), text(view, record));
-  view.body.append(node);
-  view.nodes.set(record.id, node);
+  parent.append(...marks, node);
+  view.nodes.set(record.id, { node, marks });
 }
 
 // redraw обновляет одну строку на месте: автор и группировка от состояния
 // сообщения не зависят.
 function redraw(view, record) {
-  const node = view.nodes.get(record.id);
-  if (!node) {
+  const known = view.nodes.get(record.id);
+  if (!known) {
     return;
   }
-  const first = node.classList.contains("is-head");
-  clear(node);
-  node.append(author(view, record, first), text(view, record));
+  const first = known.node.classList.contains("is-head");
+  clear(known.node);
+  known.node.append(author(view, record, first), text(view, record));
 }
 
 function divider(caption, fresh) {

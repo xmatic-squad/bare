@@ -165,6 +165,17 @@ input[type="password"] {
   width: auto;
 }
 
+/* три кнопки подтверждения в один ряд помещаются не всегда: переносятся
+   и делят место поровну (ADR-051) */
+
+.row--wrap {
+  flex-wrap: wrap;
+}
+
+.row--wrap .button {
+  flex: 1 1 120px;
+}
+
 /* подписи и строки состояния: акцент mark — только ошибка */
 
 .hint {
@@ -486,6 +497,44 @@ input[type="password"] {
   font-size: 12px;
   line-height: 1.5;
   color: var(--mute);
+}
+
+/* устройства — docs/ui.md, «Настройки». Строка: восемь символов
+   идентификатора, дата появления и «удалить»; у своей строки вместо
+   кнопки пометка (ADR-052) */
+
+.devices {
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.device__id {
+  flex: none;
+}
+
+.device .tag {
+  color: var(--stone);
+  font-size: 11px;
+}
+
+.device .tag:last-child {
+  margin-left: auto;
+}
+
+.device .link {
+  margin-left: auto;
+  color: var(--mute);
+  font-size: 12px;
 }
 
 /* баннер установки — docs/ui.md, «Баннер установки (iOS)».

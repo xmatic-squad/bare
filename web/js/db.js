@@ -438,6 +438,116 @@ export function putPeer(record) {
   return put("peers", record);
 }
 
+// --- архив --------------------------------------------------------------
+
+// allMessages и allPeers отдают хранилище целиком: архив .bare уносит всю
+// историю устройства. Какие поля в него попадают, решает export.js — база
+// отдаёт записи как есть (docs/storage.md, «Экспорт .bare»).
+export async function allMessages() {
+  const db = await open();
+  return value(db.transaction("messages", "readonly").objectStore("messages").getAll());
+}
+
+export async function allPeers() {
+  const db = await open();
+  return value(db.transaction("peers", "readonly").objectStore("peers").getAll());
+}
+
+// mergeArchive вливает разобранный архив одной транзакцией: половина
+// импорта хуже, чем ничего.
+//
+// Слияние идемпотентное по id сообщений и id чатов (docs/crypto.md):
+// известная запись не трогается, а запись peers добавляется только для
+// ника, которого в TOFU ещё нет. Своя запись всегда права — у неё есть
+// состояние отправки, которого в архиве нет (ADR-050).
+//
+// Счётчик непрочитанных и «убрано из списка» — местные: импорт приносит
+// историю, а не показания счётчиков. Место чата в списке при этом меняется:
+// lastId растёт под самое новое из добавленного, и вместе с ним уезжает
+// граница «новых» — пока непрочитанного у чата нет, ей нечего отчёркивать,
+// а оставшись позади, она отчеркнула бы всю привезённую переписку при
+// первом же входящем (ADR-050).
+//
+// Отдаёт число добавленных сообщений и ключи затронутых чатов.
+export async function mergeArchive({ chats: list = [], messages = [], peers = [] } = {}) {
+  const db = await open();
+  const tx = db.transaction(["chats", "messages", "peers"], "readwrite");
+  const chatStore = tx.objectStore("chats");
+  const messageStore = tx.objectStore("messages");
+  const peerStore = tx.objectStore("peers");
+
+  // Все чтения — одним заходом до первой записи: что уже лежит в базе,
+  // надо знать целиком, а запросы этой же транзакции держат её живой.
+  const [ids, nicks, known] = await Promise.all([
+    value(messageStore.getAllKeys()),
+    value(peerStore.getAllKeys()),
+    value(chatStore.getAll()),
+  ]);
+  const seen = new Set(ids);
+  const trusted = new Set(nicks);
+  const records = new Map(known.map((record) => [record.id, record]));
+
+  const touched = new Set();
+  for (const chat of list) {
+    if (records.has(chat.id)) {
+      continue;
+    }
+    // Показания устройства в архив не пишутся (docs/storage.md) — у новой
+    // записи они с чистого листа: место в списке считается по добавленному,
+    // счётчик пуст, чат в списке виден.
+    records.set(chat.id, {
+      ...blankChat(chat.id),
+      ...chat,
+      lastId: null,
+      lastReadId: null,
+      unread: 0,
+      hidden: false,
+    });
+    touched.add(chat.id);
+  }
+
+  let added = 0;
+  for (const record of messages) {
+    if (seen.has(record.id)) {
+      continue;
+    }
+    seen.add(record.id);
+    messageStore.put(record);
+    added += 1;
+    let chat = records.get(record.chatId);
+    if (!chat) {
+      chat = blankChat(record.chatId);
+      records.set(record.chatId, chat);
+    }
+    if (!chat.lastId || chat.lastId < record.id) {
+      chat.lastId = record.id;
+    }
+    touched.add(record.chatId);
+  }
+
+  for (const record of peers) {
+    if (trusted.has(record.nick)) {
+      continue;
+    }
+    trusted.add(record.nick);
+    peerStore.put(record);
+  }
+
+  for (const id of touched) {
+    const record = records.get(id);
+    // Граница «новых» едет за лентой, пока непрочитанного нет: счётчик
+    // и граница считаются от одной точки, иначе первое же входящее
+    // отчеркнёт «новыми» всю привезённую переписку. У чата с непрочитанным
+    // граница уже показывает на него и остаётся на месте (ADR-050).
+    if (record.unread === 0) {
+      record.lastReadId = record.lastId;
+    }
+    chatStore.put(record);
+  }
+  await done(tx);
+  return { added, chats: [...touched] };
+}
+
 // persist просит браузер не вычищать базу: история на устройстве —
 // единственная копия (docs/storage.md).
 export async function persist() {
