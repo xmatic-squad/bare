@@ -13,7 +13,7 @@ authKey = HKDF-SHA256(master, salt = пусто, info = "bare-auth-v1", 32 ба�
 kek     = HKDF-SHA256(master, salt = пусто, info = "bare-kek-v1") → AES-GCM-256
 ```
 
-`iter` — из `GET /api/kdf?nick=` перед входом, из `GET /api/config` при регистрации. Целевое значение сервера — 1 000 000, нижняя граница — 600 000 (ADR-013). WebCrypto: `deriveBits` из PBKDF2, результат импортируется `importKey("raw", …, "HKDF")`, дальше `deriveBits`/`deriveKey`.
+`iter` — из `GET /api/kdf?nick=` перед входом, из `GET /api/config` при регистрации. Целевое значение сервера — 1 000 000, границы — от 600 000 до 10 000 000 (ADR-013, ADR-030). Границы держат обе стороны: сервер не принимает блоб с `iter` вне них, клиент проверяет пришедшее число до `deriveBits` и не считает по нему ничего. WebCrypto: `deriveBits` из PBKDF2, результат импортируется `importKey("raw", …, "HKDF")`, дальше `deriveBits`/`deriveKey`.
 
 `authKey` — единственное, что уходит на сервер. Пароль и `master` не покидают память клиента и не пишутся в IndexedDB.
 

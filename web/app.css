@@ -35,10 +35,33 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
-/* заставка: знак и слово, больше пока ничего */
+/* #app — колонка ровно в высоту окна: от неё считают высоту экраны,
+   поэтому сайдбар с «ты: @nick» стоит на месте, а прокручивается
+   только содержимое */
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* знак: четыре угла, один цвет, без скруглений */
+
+.mark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+/* заставка: знак и слово, пока не поднялись модули */
 
 .boot {
-  min-height: 100%;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -53,4 +76,361 @@ body {
 .boot .word {
   font-size: 15px;
   letter-spacing: -0.02em;
+}
+
+/* формы: рамка 1 px ink, прямые углы, цель нажатия 44 px */
+
+.form {
+  max-width: 360px;
+}
+
+.field {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.field > span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--mute);
+}
+
+input[type="text"],
+input[type="password"] {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 14px;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: var(--bone);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.button {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 14px;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: var(--bone);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.button[disabled] {
+  border-color: var(--edge);
+  color: var(--stone);
+  cursor: default;
+}
+
+/* hidden обязан прятать: display у .button перебивает таблицу браузера,
+   поэтому кнопке нужно отдельное правило */
+
+.button[hidden] {
+  display: none;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-size: 12px;
+  color: var(--text2);
+  cursor: pointer;
+}
+
+.check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ink);
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.row .button {
+  flex: 1;
+  width: auto;
+}
+
+/* подписи и строки состояния: акцент mark — только ошибка */
+
+.hint {
+  margin: -4px 0 14px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--mute);
+}
+
+.message {
+  min-height: 18px;
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--mute);
+}
+
+.message--error {
+  color: var(--mark);
+}
+
+.confirm {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--text2);
+}
+
+/* вход и регистрация */
+
+.auth {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.auth__inner {
+  width: 100%;
+  max-width: 320px;
+}
+
+.auth .form {
+  max-width: none;
+}
+
+.auth__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 22px;
+}
+
+.tab {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tab.is-on {
+  background: var(--ink);
+  color: var(--bone);
+}
+
+.tabs__sep {
+  color: var(--stone);
+  font-size: 13px;
+}
+
+/* каркас: сайдбар и экран */
+
+.shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.side {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.brand {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.section {
+  margin: 0;
+  padding: 0 8px 10px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--stone);
+}
+
+.items {
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+}
+
+.me {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: auto;
+  padding: 16px 20px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.me i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--ink);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 56px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+}
+
+.back {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 0;
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+/* настройки */
+
+.settings {
+  max-width: 460px;
+}
+
+.block {
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+
+.block--first {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.self {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.fp {
+  margin: 0;
+  font-size: 12px;
+  color: var(--mute);
+}
+
+.block .form {
+  margin-top: 14px;
+}
+
+@media (min-width: 760px) {
+  .shell {
+    display: grid;
+    grid-template-columns: 224px 1fr;
+  }
+
+  .side {
+    border-right: 1px solid var(--line);
+  }
+
+  .brand {
+    height: 64px;
+  }
+
+  .head {
+    height: 64px;
+    padding: 0 32px;
+  }
+
+  .body {
+    padding: 28px 32px;
+  }
+}
+
+/* мобильный: один экран за раз, цели нажатия не меньше 44 px */
+
+@media (max-width: 759px) {
+  .shell[data-screen="list"] .main {
+    display: none;
+  }
+
+  .shell[data-screen="screen"] .side {
+    display: none;
+  }
+
+  .tab,
+  .back {
+    min-height: 44px;
+  }
 }

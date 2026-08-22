@@ -22,6 +22,7 @@ import (
 
 	"github.com/xmatic-squad/bare/internal/api"
 	"github.com/xmatic-squad/bare/internal/config"
+	"github.com/xmatic-squad/bare/internal/store"
 	"github.com/xmatic-squad/bare/internal/web"
 )
 
@@ -70,9 +71,17 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	st, err := store.Open(cfg.DB)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	for _, name := range st.Applied() {
+		fmt.Printf("bare применил миграцию %s\n", name)
+	}
 
 	srv := &http.Server{
-		Handler:           api.New(static, os.Stdout),
+		Handler:           api.New(cfg, st, static, os.Stdout),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		// OPTIONS * иначе обслуживает net/http сам, в обход middleware:
@@ -90,6 +99,11 @@ func serve() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Фоновая чистка живёт столько же, сколько сервер (docs/storage.md).
+	go st.RunCleanup(ctx, func(err error) {
+		fmt.Fprintln(os.Stderr, "bare:", err)
+	})
 
 	failed := make(chan error, 1)
 	go func() {

@@ -16,7 +16,10 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bar
 sudo useradd --system --home /var/lib/bare --shell /usr/sbin/nologin bare
 sudo mkdir -p /opt/bare /var/lib/bare /etc/bare
 sudo chown bare:bare /var/lib/bare
+sudo chmod 0700 /var/lib/bare /etc/bare
 ```
+
+Права закрыты намеренно (ADR-032): в базе лежат `argon2id(authKey)` и ключевые блобы, машина общая.
 
 `/etc/bare/env` (владелец root, режим 0600):
 
@@ -48,6 +51,8 @@ ExecStart=/opt/bare/bare serve
 Restart=on-failure
 RestartSec=2
 StateDirectory=bare
+StateDirectoryMode=0700
+UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -128,8 +133,8 @@ ssh xmatic 'sudo install -m 0755 -o root -g root /tmp/bare /opt/bare/bare && sud
 
 ## Бэкап
 
-`sqlite3 /var/lib/bare/bare.db "VACUUM INTO '/var/lib/bare/backup.db'"` или копия файла при остановленном сервисе. В базе только шифротексты и метаданные — бэкап не содержит переписки.
+`sqlite3 /var/lib/bare/bare.db "VACUUM INTO '/var/lib/bare/backup.db'"` или копия файла при остановленном сервисе. В базе только шифротексты и метаданные — бэкап не содержит переписки. Копия наследует режим 0600 (ADR-032); при восстановлении в другое место права надо выставить руками.
 
 ## Логи
 
-Сервер пишет в stdout: время, метод, путь, статус, длительность; ник — только для ошибок аутентификации по лимитам; IP не пишется. journald хранит по своим правилам.
+Сервер пишет в stdout: время, метод, путь, статус, длительность; для маршрутов `/api/` вместо пути пишется шаблон (`/api/users/{nick}`), чтобы ник не попадал в журнал, а если отказ случился до маршрутизации (`Origin`, предел тела) и шаблона ещё нет — просто `/api/`; ник — только для ошибок аутентификации по лимитам; IP не пишется. Причины ответов `500 internal` (ADR-027) пишутся отдельной строкой, без данных запроса. journald хранит по своим правилам.
