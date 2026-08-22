@@ -38,7 +38,7 @@ CREATE TABLE contacts (
 );
 
 CREATE TABLE rooms (
-  id          TEXT PRIMARY KEY,         -- base64url 16 байт, выдаёт сервер
+  id          TEXT PRIMARY KEY,         -- base64url 16 байт, выдаёт клиент (ADR-037)
   name        TEXT NOT NULL,
   owner       TEXT NOT NULL REFERENCES users(nick),
   created_at  INTEGER NOT NULL

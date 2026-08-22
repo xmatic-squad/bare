@@ -104,16 +104,104 @@ func (s *Store) SetPassword(ctx context.Context, nick string, cred Credential, b
 	return nil
 }
 
-// DeleteUser удаляет пользователя; устройства, сессии, контакты, членство
-// и очереди уносит каскад.
+// DeleteUser удаляет пользователя; устройства, сессии, контакты, членство,
+// ключи комнат и очереди уносит каскад.
 //
-// Комнаты, где пользователь владелец, каскадом не удаляются: rooms.owner
-// ссылается на users(nick) без ON DELETE, и удаление такого пользователя
-// упрётся в внешний ключ. Передача владения и удаление пустых комнат —
-// ADR-018, этап 3; до появления комнат случай не наступает.
-func (s *Store) DeleteUser(ctx context.Context, nick string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE nick = ?`, nick); err != nil {
-		return fmt.Errorf("store: удаление пользователя: %w", err)
+// Удаление аккаунта — выход из всех его комнат (ADR-041): по составу это
+// тот же уход участника, что и POST /api/rooms/{id}/leave. Членство и ключи
+// убираются до каскада, чтобы собрать оставшихся с их устройствами и
+// текущими ключами; владение переходит участнику с наименьшим joined_at,
+// опустевшая комната удаляется, у остальных выставляется needs_rekey.
+// Всё вместе — одна транзакция; события рассылает обработчик после неё.
+func (s *Store) DeleteUser(ctx context.Context, nick string) ([]RoomChange, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: удаление пользователя: %w", err)
 	}
-	return nil
+	defer tx.Rollback()
+
+	rooms, err := memberRooms(ctx, tx, nick)
+	if err != nil {
+		return nil, err
+	}
+	var changes []RoomChange
+	for _, id := range rooms {
+		room, err := roomRow(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		change, err := leaveRoom(ctx, tx, room, nick)
+		if err != nil {
+			return nil, err
+		}
+		// Комната опустела и удалена — рассылать некому.
+		if len(change.Members) > 0 {
+			changes = append(changes, change)
+		}
+	}
+	// Владелец всегда состоит в своей комнате: из состава его не убрать,
+	// а выход передаёт владение (ADR-018), — так что здесь уже пусто.
+	// Проверка остаётся ради внешнего ключа: rooms.owner ссылается на
+	// users(nick) без ON DELETE, и забытая строка заперла бы удаление.
+	owned, err := ownedRooms(ctx, tx, nick)
+	if err != nil {
+		return nil, err
+	}
+	for _, room := range owned {
+		var heir string
+		err := tx.QueryRowContext(ctx, `
+			SELECT nick FROM room_members
+			WHERE room_id = ? AND nick <> ? ORDER BY joined_at, nick LIMIT 1`, room, nick).Scan(&heir)
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM rooms WHERE id = ?`, room); err != nil {
+				return nil, fmt.Errorf("store: удаление пустой комнаты: %w", err)
+			}
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("store: передача владения: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE rooms SET owner = ? WHERE id = ?`, heir, room); err != nil {
+			return nil, fmt.Errorf("store: передача владения: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE nick = ?`, nick); err != nil {
+		return nil, fmt.Errorf("store: удаление пользователя: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: удаление пользователя: %w", err)
+	}
+	return changes, nil
+}
+
+// ownedRooms — комнаты, где пользователь владелец.
+func ownedRooms(ctx context.Context, tx *sql.Tx, nick string) ([]string, error) {
+	return roomIDs(ctx, tx, `SELECT id FROM rooms WHERE owner = ? ORDER BY created_at, id`, nick)
+}
+
+// memberRooms — комнаты, где пользователь участник.
+func memberRooms(ctx context.Context, tx *sql.Tx, nick string) ([]string, error) {
+	return roomIDs(ctx, tx, `SELECT room_id FROM room_members WHERE nick = ? ORDER BY joined_at, room_id`, nick)
+}
+
+// roomIDs — идентификаторы комнат по запросу с одним параметром.
+func roomIDs(ctx context.Context, tx *sql.Tx, query, nick string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, query, nick)
+	if err != nil {
+		return nil, fmt.Errorf("store: комнаты пользователя: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: комнаты пользователя: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: комнаты пользователя: %w", err)
+	}
+	return out, nil
 }

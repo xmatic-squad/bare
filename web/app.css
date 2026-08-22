@@ -393,7 +393,20 @@ input[type="password"] {
   font-size: 15px;
 }
 
+/* имя комнаты бывает длиной в 64 символа (ADR-018): в шапке оно
+   обрезается, как и в строке сайдбара, — иначе страница едет вбок */
+
+.head .chat-title,
+.head .title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .back {
+  flex: none;
   min-height: 32px;
   padding: 6px 10px;
   border: 1px solid var(--edge);
@@ -444,10 +457,71 @@ input[type="password"] {
   margin-top: 14px;
 }
 
+.fp-label {
+  margin: 12px 0 4px;
+  font-size: 11px;
+  color: var(--stone);
+}
+
+.block--first > .fp-label:first-child {
+  margin-top: 0;
+}
+
 .fp-hint {
   margin: 10px 0 0;
   font-size: 11px;
   color: var(--mute);
+}
+
+/* участники комнаты — docs/ui.md, «Участники» */
+
+.members {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.member__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member .tag {
+  color: var(--stone);
+  font-size: 11px;
+}
+
+.member .link {
+  margin-left: auto;
+  color: var(--mute);
+  font-size: 12px;
+}
+
+/* строка ввода как отдельная форма: «новый чат» и «добавить участника» */
+
+.form--row + .form--row {
+  margin-top: 12px;
+}
+
+.form--row .button {
+  margin-top: 10px;
+}
+
+/* две кнопки подряд не слипаются в двойную рамку */
+
+.block > .button + .button {
+  margin-top: 10px;
 }
 
 /* чат: шапка, лента, ввод — docs/identity/screens.html */
@@ -663,6 +737,13 @@ input[type="password"] {
   cursor: pointer;
 }
 
+/* ввод заблокирован предупреждением о ключе: кнопка «>» тоже гаснет */
+
+.input__send[disabled] {
+  color: var(--stone);
+  cursor: default;
+}
+
 .counter,
 .enter {
   flex: none;
@@ -675,13 +756,22 @@ input[type="password"] {
   margin-left: 0;
 }
 
-/* полоса над вводом: нет соединения — stone, отказ отправки — mark */
+/* полоса над вводом: нет соединения — stone, отказ отправки и смена
+   ключа — mark. У полосы про ключ есть кнопка, поэтому строка — flex */
 
 .bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 8px;
   margin: 0 0 10px;
   font-size: 11px;
   line-height: 1.5;
   color: var(--stone);
+}
+
+.bar[hidden] {
+  display: none;
 }
 
 .bar--mark {

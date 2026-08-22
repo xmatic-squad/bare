@@ -44,7 +44,7 @@ CREATE TABLE contacts (
 );
 
 CREATE TABLE rooms (
-  id          TEXT PRIMARY KEY,         -- base64url 16 байт, выдаёт сервер
+  id          TEXT PRIMARY KEY,         -- base64url 16 байт, выдаёт клиент
   name        TEXT NOT NULL,
   owner       TEXT NOT NULL REFERENCES users(nick),
   created_at  INTEGER NOT NULL
@@ -79,9 +79,19 @@ CREATE TABLE queue (
 CREATE INDEX queue_created ON queue(created_at);
 ```
 
+### Миграция 002
+
+```sql
+ALTER TABLE rooms ADD COLUMN needs_rekey INTEGER NOT NULL DEFAULT 0;
+```
+
+Признак «состав уменьшился, нового ключа ещё не было» (ADR-041): ставится при выходе участника и удалении аккаунта, снимается при `POST /api/rooms/{id}/members`, отдаётся полем `needsRekey`.
+
 Текущий ключ комнаты для участника — строка `room_keys` с максимальным `created_at`; `keyId` считается ключом комнаты, если есть хоть одна строка с таким `key_id` для `room_id`.
 
-Удаление пользователя: перед `DELETE FROM users` сервер обрабатывает комнаты, где он владелец (передача или удаление), остальное — каскад.
+Время записи `room_keys` строго больше времени всех прежних ключей той же комнаты; при равенстве порядок доопределяется по `key_id` (ADR-042). Два rekey подряд укладываются в одну миллисекунду, поэтому `created_at` ключа — не в точности миллисекунды Unix, а миллисекунды, сдвинутые вперёд ровно настолько, чтобы «последний» был однозначен.
+
+Удаление пользователя: перед `DELETE FROM users` сервер обрабатывает его комнаты — убирает членство и ключи, передаёт владение или удаляет опустевшую комнату, ставит `needs_rekey` там, где участники остались (ADR-041), — остальное уносит каскад.
 
 ### Фоновая чистка, раз в час
 
@@ -119,6 +129,8 @@ messages    key: id (ULID)
 
 roomKeys    key: [roomId, keyId]
   {roomId, keyId, key: CryptoKey AES-GCM non-extractable, from, receivedAt}
+  // receivedAt строго больше receivedAt всех прежних ключей той же комнаты;
+  // текущий ключ — последний по нему, то есть в порядке получения (ADR-042)
 
 peers       key: nick
   {nick, publicKey: JWK, fingerprint, firstSeen,

@@ -22,11 +22,12 @@ func TestMigrateAndRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bare.db")
 
 	first := open(t, path)
-	if got := first.Applied(); len(got) != 1 || got[0] != "001_init.sql" {
-		t.Fatalf("применённые миграции: получено %v, ожидалось [001_init.sql]", got)
+	want := []string{"001_init.sql", "002_room_needs_rekey.sql"}
+	if got := first.Applied(); !equal(got, want) {
+		t.Fatalf("применённые миграции: получено %v, ожидалось %v", got, want)
 	}
-	if got := version(t, first); got != 1 {
-		t.Errorf("user_version: получено %d, ожидалась 1", got)
+	if got := version(t, first); got != len(want) {
+		t.Errorf("user_version: получено %d, ожидалась %d", got, len(want))
 	}
 	// Все восемь таблиц из docs/storage.md на месте.
 	for _, table := range []string{"users", "devices", "sessions", "contacts", "rooms", "room_members", "room_keys", "queue"} {
@@ -52,8 +53,8 @@ func TestMigrateAndRestart(t *testing.T) {
 	if got := second.Applied(); len(got) != 0 {
 		t.Errorf("повторный старт применил %v, ожидалось ничего", got)
 	}
-	if got := version(t, second); got != 1 {
-		t.Errorf("user_version после перезапуска: получено %d, ожидалась 1", got)
+	if got := version(t, second); got != len(want) {
+		t.Errorf("user_version после перезапуска: получено %d, ожидалась %d", got, len(want))
 	}
 }
 
@@ -124,7 +125,7 @@ func TestUsersAndSessions(t *testing.T) {
 	}
 
 	// Удаление пользователя уносит сессии каскадом.
-	if err := s.DeleteUser(ctx, "marta"); err != nil {
+	if _, err := s.DeleteUser(ctx, "marta"); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 	if _, err := s.Session(ctx, live, now); !errors.Is(err, ErrNotFound) {

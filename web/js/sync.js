@@ -2,11 +2,17 @@
 // Экраны берут отсюда данные и сюда же отдают действия; в db.js и api.js
 // они не ходят — пишет в базу только этот модуль.
 //
-// Правила — docs/protocol.md («События», «Сообщения») и docs/storage.md:
-// ACK уходит только после успешной записи в IndexedDB, исходящее живёт
-// в pending до 202 и держится за свой ULID, пока время в нём годится
-// серверу; отвергнутый по часам переиспользованный id меняется на свежий
-// один раз (ADR-036).
+// Правила — docs/protocol.md («События», «Сообщения», «Комнаты»)
+// и docs/storage.md: ACK уходит только после успешной записи в IndexedDB,
+// исходящее живёт в pending до 202 и держится за свой ULID, пока время
+// в нём годится серверу; отвергнутый по часам переиспользованный id
+// меняется на свежий один раз (ADR-036).
+//
+// Доверие к ключам — TOFU (ADR-016): каждый публичный ключ, пришедший
+// от сервера, сверяется с запомненным; изменившийся ложится в pending
+// и блокирует отправку до подтверждения. Ключи комнат — docs/crypto.md,
+// «Комната»: владелец заворачивает новый ключ каждому участнику, клиент
+// держит все ключи комнаты и расшифровывает любым известным.
 
 import * as api from "./api.js";
 import { ApiError, NetworkError } from "./api.js";
@@ -16,9 +22,15 @@ import {
   dmKey,
   dmLabel,
   fingerprintOf,
+  importRoomKey,
   newId,
+  newRoomKey,
   openMessage,
+  roomLabel,
   sealMessage,
+  unwrapRoomKey,
+  wipe,
+  wrapRoomKey,
 } from "./crypto.js";
 import { ulid, ulidTime, validUlid } from "./ulid.js";
 
@@ -41,6 +53,9 @@ const state = {
   running: false,
   nick: null,
   privateKey: null,
+  // Свой публичный ключ: он проверен при входе, и спрашивать его у сервера
+  // незачем — заворачивание себе идёт по нему (docs/crypto.md, «Комната»).
+  publicKey: null,
   device: null,
   close: null, // закрыть поток событий
   online: false,
@@ -53,6 +68,17 @@ const state = {
   // Ключи личных чатов — только в памяти: в IndexedDB они не пишутся,
   // а выводятся заново из peers (docs/crypto.md, «Чат 1:1»).
   keys: new Map(),
+  // Ключи комнат: "<roomId>|<keyId>" → CryptoKey. Это кэш над хранилищем
+  // roomKeys, где ключи и живут.
+  roomKeys: new Map(),
+  // Комнаты, где rekey упёрся в неподтверждённый ключ: roomId → ники
+  // (ADR-016). Состояние экрана, в базу не пишется.
+  blocked: new Map(),
+  // Комнаты, которым мы должны новый ключ: участник вышел, а rekey
+  // не прошёл. Долг поднимается и из события room, и из GET /api/rooms:
+  // это состояние комнаты, и офлайн владельца его не теряет (ADR-041).
+  // Отдаётся после ready и после подтверждения ключа (ADR-018).
+  owed: new Set(),
   // Неотправленное. Полный проход по messages делается один раз при
   // старте: индекса по статусу в схеме нет (docs/storage.md).
   pending: new Set(),
@@ -68,12 +94,16 @@ const state = {
 
 const bus = new EventTarget();
 
-// on подписывает обработчик и отдаёт функцию отписки. События три:
+// on подписывает обработчик и отдаёт функцию отписки. События пять:
 //
 //   "net"      {online}                — доходят ли запросы до сервера
 //   "chats"    {}                      — список чатов изменился
 //   "messages" {chatId, ids, removed}  — в чате появились, изменились
 //                                        или исчезли сообщения
+//   "peers"    {nick}                  — доверие к ключу ника изменилось:
+//                                        появился pending или его подтвердили
+//   "rooms"    {id}                    — комната изменилась: имя, состав,
+//                                        ключ, потребность в rekey
 //
 // removed непуст, только когда повтор отправки выдал сообщению новый
 // ULID: старую запись из ленты надо убрать. Обычный повтор идёт с прежним
@@ -129,6 +159,21 @@ function announceChats() {
   share({ kind: "chats" });
 }
 
+// announcePeer — доверие к ключу ника изменилось: карточке контакта нужен
+// новый отпечаток, чату — полоса про смену ключа (docs/ui.md).
+function announcePeer(nick) {
+  emit("peers", { nick });
+  share({ kind: "peers", nick });
+}
+
+// announceRoom — комната изменилась: экрану участников нужен свежий состав
+// и знание, чей ключ мешает rekey. Список ников едет вместе с событием:
+// он живёт в памяти вкладки, а в базе его нет.
+function announceRoom(id) {
+  emit("rooms", { id });
+  share({ kind: "rooms", id, blocked: needsTrust(id) });
+}
+
 // --- соседние вкладки ---------------------------------------------------
 
 // share отдаёт изменение соседним вкладкам. Канал открыт, только пока
@@ -172,6 +217,31 @@ function receive(data) {
     case "chats":
       emit("chats");
       return;
+    case "peers":
+      if (typeof data.nick === "string") {
+        // Ключ личного чата выведен из ключа собеседника и лежит в памяти
+        // этой вкладки: доверие изменилось — выводим заново из peers
+        // (docs/crypto.md, «Чат 1:1»). Без этого вкладка продолжила бы
+        // шифровать ключом, который человек только что отверг.
+        state.keys.delete(data.nick);
+        // Сохранённые raw перебирает владелец потока: конверты, разобранные
+        // устаревшим ключом до сброса, иначе остались бы нерасшифрованными.
+        if (state.release) {
+          serial(reopen);
+        }
+        emit("peers", { nick: data.nick });
+      }
+      return;
+    case "rooms":
+      if (typeof data.id === "string") {
+        if (Array.isArray(data.blocked) && data.blocked.length > 0) {
+          state.blocked.set(data.id, data.blocked);
+        } else {
+          state.blocked.delete(data.id);
+        }
+        emit("rooms", { id: data.id });
+      }
+      return;
     case "pending":
       // Соседняя вкладка не отправила сообщение и повторять его не будет:
       // повторяет владелец потока.
@@ -202,16 +272,17 @@ export async function start() {
   }
   let meta;
   try {
-    meta = await db.meta(["nick", "privateKey"]);
+    meta = await db.meta(["nick", "privateKey", "publicKey"]);
   } catch {
     return;
   }
-  if (!meta.nick || !meta.privateKey) {
+  if (!meta.nick || !meta.privateKey || !meta.publicKey) {
     return;
   }
   state.running = true;
   state.nick = meta.nick;
   state.privateKey = meta.privateKey;
+  state.publicKey = meta.publicKey;
   openChannel();
   try {
     for (const m of await db.pendingMessages()) {
@@ -242,8 +313,12 @@ export function stop() {
   closeChannel();
   state.nick = null;
   state.privateKey = null;
+  state.publicKey = null;
   state.device = null;
   state.keys.clear();
+  state.roomKeys.clear();
+  state.blocked.clear();
+  state.owed.clear();
   state.pending.clear();
   state.inbox.length = 0;
   state.wait = RETRY_MIN;
@@ -370,6 +445,18 @@ function openStream() {
       if (envelope) {
         state.inbox.push(envelope);
         schedule();
+      }
+    },
+    // Комнаты разбираются в общей очереди работ: приём сообщений и раздача
+    // ключей не должны перемешиваться.
+    room: (room) => {
+      if (room) {
+        serial(() => applyRoom(room));
+      }
+    },
+    roomLeft: (data) => {
+      if (typeof data?.id === "string") {
+        serial(() => forgetRoom(data.id));
       }
     },
     ready: () => {
@@ -544,25 +631,46 @@ function usable(e) {
 // не разобрать по причине, которая пройдёт»: конверт остаётся и у нас,
 // и в очереди сервера — ACK по нему не уходит. Ошибка AEAD
 // и неизвестный keyId причиной не являются —
-// сообщение сохраняется нерасшифрованным (docs/crypto.md, «Сообщение»).
+// сообщение сохраняется нерасшифрованным (docs/crypto.md, «Сообщение»)
+// вместе с raw: по нему попытка повторяется, когда ключ появится
+// или когда новый ключ собеседника подтвердят (docs/storage.md).
 async function decode(envelope) {
   const me = state.nick;
-  const peer = envelope.to.dm
+  const room = typeof envelope.to.room === "string" ? envelope.to.room : null;
+  const peer = room === null
     ? (envelope.from === me ? envelope.to.dm : envelope.from)
     : null;
   const base = {
     id: envelope.id,
-    chatId: peer === null ? db.roomChatId(envelope.to.room) : db.dmChatId(peer),
+    chatId: room === null ? db.dmChatId(peer) : db.roomChatId(room),
     from: envelope.from,
     text: null,
     ts: envelope.ts,
     status: "sent",
   };
-  // Комнаты — этап 3: ключа комнаты на устройстве ещё нет.
-  if (peer === null || envelope.keyId !== DM_KEY_ID) {
-    return { ...base, undecryptable: "unknown_key", raw: envelope };
+
+  if (room !== null) {
+    // Комната расшифровывается любым известным ключом по keyId конверта:
+    // клиент держит все ключи комнаты (ADR-018).
+    let key;
+    try {
+      key = await roomKeyOf(room, envelope.keyId);
+    } catch {
+      return null;
+    }
+    if (key === null) {
+      return { ...base, undecryptable: "unknown_key", raw: envelope };
+    }
+    try {
+      return { ...base, text: await openMessage(key, { ...envelope, chat: roomLabel(room) }) };
+    } catch {
+      return { ...base, undecryptable: "bad_aead", raw: envelope };
+    }
   }
 
+  if (envelope.keyId !== DM_KEY_ID) {
+    return { ...base, undecryptable: "unknown_key", raw: envelope };
+  }
   let key;
   try {
     key = await chatKey(peer);
@@ -577,10 +685,43 @@ async function decode(envelope) {
     const text = await openMessage(key, { ...envelope, chat: dmLabel(me, peer) });
     return { ...base, text };
   } catch {
-    // Смену ключа собеседника разбирает TOFU (ADR-016) — этап 3;
-    // до тех пор любая неудача AEAD выглядит одинаково.
-    return { ...base, undecryptable: "bad_aead", raw: envelope };
+    // Расшифровка идёт доверенным ключом. Не сошлось, а у ника ждёт
+    // подтверждения новый, — сообщение зашифровано им (ADR-016).
+    const known = await db.peer(peer).catch(() => null);
+    return {
+      ...base,
+      undecryptable: known?.pending ? "key_changed" : "bad_aead",
+      raw: envelope,
+    };
   }
+}
+
+// reopen — повторная расшифровка сохранённого raw: пришёл недостающий ключ
+// комнаты или подтверждён новый ключ собеседника (docs/storage.md).
+// Записи свои, а не входящие: перезапись по id здесь законна (ADR-034).
+async function reopen() {
+  let list;
+  try {
+    list = await db.undecryptable();
+  } catch {
+    return;
+  }
+  const messages = [];
+  for (const record of list) {
+    if (!usable(record.raw)) {
+      continue;
+    }
+    const fresh = await decode(record.raw);
+    if (fresh === null || fresh.text === null) {
+      continue;
+    }
+    messages.push(fresh);
+  }
+  if (messages.length === 0) {
+    return;
+  }
+  await db.saveMessages({ messages, me: state.nick });
+  notify(messages);
 }
 
 async function ackAll(ids) {
@@ -598,10 +739,13 @@ async function ackAll(ids) {
 // --- после ready --------------------------------------------------------
 
 // afterReady — очередь выдана целиком. Клиент перечитывает контакты
-// и повторяет неотправленное (docs/ui.md, «Сеть и состояния»).
-// Комнаты — этап 3.
+// и комнаты и повторяет неотправленное (docs/ui.md, «Сеть и состояния»):
+// события room и room_left в очередь не кладутся, и пропущенное во время
+// офлайна восстанавливается только этим (docs/protocol.md, «События»).
 async function afterReady() {
   await refreshContacts();
+  await refreshRooms();
+  await payRekeys();
   await retryPending();
 }
 
@@ -614,7 +758,9 @@ async function refreshContacts() {
   }
   let changed = false;
   for (const contact of list) {
-    await rememberPeer(contact.nick, contact.publicKey, contact.createdAt);
+    // Список контактов — главное место сверки TOFU: ключи всех собеседников
+    // приходят от сервера после каждого ready (ADR-016).
+    await seePeer(contact.nick, contact.publicKey, contact.createdAt).catch(() => {});
     const chatId = db.dmChatId(contact.nick);
     if (!(await db.chat(chatId))) {
       await db.putChat(db.blankChat(chatId));
@@ -646,7 +792,8 @@ async function retryPending() {
 
 // --- собеседники --------------------------------------------------------
 
-// chatKey — ключ личного чата из памяти или выведенный заново.
+// chatKey — ключ личного чата из памяти или выведенный заново. Выводится
+// он из доверенного ключа: ждущий подтверждения в дело не идёт (ADR-016).
 async function chatKey(peer) {
   const cached = state.keys.get(peer);
   if (cached) {
@@ -658,43 +805,566 @@ async function chatKey(peer) {
   return key;
 }
 
-// knownPeer — запись TOFU. Ключа нет — берём у сервера и запоминаем
-// как есть: сверка изменившегося ключа — этап 3 (ADR-016).
+// knownPeer — запись TOFU. Ника ещё нет — берём ключ у сервера: первый
+// ключ запоминается молча, trust on first use (ADR-016).
 async function knownPeer(nick) {
   const known = await db.peer(nick);
   if (known) {
     return known;
   }
   const user = await api.user(nick);
-  return rememberPeer(user.nick, user.publicKey);
+  return seePeer(user.nick, user.publicKey);
 }
 
-// rememberPeer запоминает ключ при первом контакте. Уже знакомый ник
-// не трогается: смена ключа — состояние, а не перезапись (ADR-016).
-async function rememberPeer(nick, publicKey, firstSeen = Date.now()) {
+// seePeer — сверка TOFU. Зовётся при каждом получении публичного ключа ника,
+// откуда бы он ни пришёл: GET /api/users, список контактов, состав комнаты,
+// отправитель завёрнутого ключа (ADR-016).
+//
+// Первый ключ ника запоминается молча. Совпавший — ничего не меняет.
+// Изменившийся ложится в pending: отправка этому нику блокируется, входящее
+// его ключом остаётся нерасшифрованным, rekey ему не выполняется — всё
+// до явного «доверять новому ключу».
+//
+// Сервер, вернувшийся к доверенному ключу, снимает pending: смены не
+// случилось, а подтверждать было бы уже отозванный ключ (ADR-040,
+// docs/ui.md, «Карточка контакта»).
+async function seePeer(nick, publicKey, firstSeen = Date.now()) {
+  const fingerprint = await fingerprintOf(publicKey);
   const known = await db.peer(nick);
-  if (known) {
+  if (!known) {
+    const record = { nick, publicKey, fingerprint, firstSeen, pending: null };
+    await db.putPeer(record);
+    return record;
+  }
+  if (known.fingerprint === fingerprint) {
+    if (!known.pending) {
+      return known;
+    }
+    const record = { ...known, pending: null };
+    await db.putPeer(record);
+    announcePeer(nick);
+    return record;
+  }
+  if (known.pending?.fingerprint === fingerprint) {
     return known;
   }
-  const record = {
-    nick,
-    publicKey,
-    fingerprint: await fingerprintOf(publicKey),
-    firstSeen,
-    pending: null,
-  };
+  const record = { ...known, pending: { publicKey, fingerprint, seenAt: Date.now() } };
   await db.putPeer(record);
+  announcePeer(nick);
   return record;
 }
 
+// trustKey — «доверять новому ключу» из карточки контакта (docs/ui.md).
+// Ключ из pending становится основным, pending чистится, и всё, что
+// упиралось в старый ключ, повторяется: завёрнутые ключи комнат от этого
+// ника, сохранённые raw и неотправленное.
+//
+// Отдаёт, было ли что подтверждать.
+export function trustKey(nick) {
+  return serial(async () => {
+    if (!state.running) {
+      return false;
+    }
+    const known = await db.peer(nick);
+    if (!known?.pending) {
+      return false;
+    }
+    await db.putPeer({
+      nick: known.nick,
+      publicKey: known.pending.publicKey,
+      fingerprint: known.pending.fingerprint,
+      // firstSeen — когда ник встретился впервые, а не когда сменил ключ.
+      firstSeen: known.firstSeen,
+      pending: null,
+    });
+    // Ключ личного чата выводится из ключа собеседника — выводим заново.
+    state.keys.delete(nick);
+    announcePeer(nick);
+    await refreshRooms();
+    // Владелец, чей rekey упирался в этот ключ, доводит его до конца.
+    await payRekeys();
+    await reopen();
+    await retryPending();
+    return true;
+  });
+}
+
+// --- комнаты ------------------------------------------------------------
+
+// TrustNeeded — rekey не выполняется участнику с изменившимся и
+// неподтверждённым ключом (ADR-016). nicks — чьи ключи ждут подтверждения;
+// владелец повторяет операцию после «доверять новому ключу».
+export class TrustNeeded extends Error {
+  constructor(nicks) {
+    super("нужно подтвердить ключ");
+    this.name = "TrustNeeded";
+    this.nicks = nicks;
+  }
+}
+
+// needsTrust — чьи ключи мешают rekey комнаты (docs/ui.md, «Участники»).
+export function needsTrust(roomId) {
+  return state.blocked.get(roomId) ?? [];
+}
+
+// usableRoom и usableKey — форма Room и завёрнутого ключа
+// (docs/protocol.md, «Типы»). Сервер её держит, но записи собираются
+// из этих полей, и мусор до базы не доходит.
+function usableRoom(r) {
+  return r !== null && typeof r === "object"
+    && typeof r.id === "string" && r.id !== ""
+    && typeof r.name === "string"
+    && typeof r.owner === "string"
+    && Array.isArray(r.members) && r.members.every((nick) => typeof nick === "string")
+    && Number.isFinite(r.createdAt)
+    && (r.key === null || r.key === undefined || usableKey(r.key));
+}
+
+function usableKey(k) {
+  return k !== null && typeof k === "object"
+    && typeof k.keyId === "string" && k.keyId !== ""
+    && typeof k.from === "string"
+    && typeof k.iv === "string" && typeof k.ct === "string";
+}
+
+// roomKeyOf — ключ комнаты по keyId конверта; null, если такого нет.
+async function roomKeyOf(roomId, keyId) {
+  const at = `${roomId}|${keyId}`;
+  const cached = state.roomKeys.get(at);
+  if (cached) {
+    return cached;
+  }
+  const record = await db.roomKey(roomId, keyId);
+  if (!record) {
+    return null;
+  }
+  state.roomKeys.set(at, record.key);
+  return record.key;
+}
+
+// currentKeyId — текущий ключ комнаты: последний полученный этим
+// устройством. Им шифруется исходящее. Порядок — получения, а не сервера:
+// номера ключа протокол не несёт, и в гонке двух rekey эти порядки могут
+// разойтись (ADR-042). Оба ключа при этом живы, сервер принимает любой.
+async function currentKeyId(roomId) {
+  const list = await db.roomKeysOf(roomId);
+  return list.length > 0 ? list[list.length - 1].keyId : null;
+}
+
+// saveRoom кладёт комнату в список чатов. Имя, владелец и состав приходят
+// от сервера; лента, счётчик непрочитанных и граница «новых» — местные.
+function saveRoom(room) {
+  return db.mergeChat(db.roomChatId(room.id), {
+    type: "room",
+    roomId: room.id,
+    title: room.name,
+    owner: room.owner,
+    members: [...room.members],
+    // Комната в списке есть, пока мы её участники.
+    hidden: false,
+  });
+}
+
+// senderKey — публичный ключ того, кто завернул ключ комнаты. Свой берётся
+// с устройства: он проверен при входе и от сервера не зависит. Чужой
+// приходит от сервера и проходит через TOFU; ключ, ждущий подтверждения, —
+// null: разворачивать им нельзя (ADR-016).
+async function senderKey(nick) {
+  if (nick === state.nick) {
+    return state.publicKey;
+  }
+  const user = await api.user(nick);
+  const record = await seePeer(nick, user.publicKey);
+  return record.pending ? null : record.publicKey;
+}
+
+// takeRoomKey разворачивает завёрнутый нам ключ комнаты и кладёт его
+// в roomKeys вместе с from и receivedAt (docs/crypto.md, «Комната»).
+// Отдаёт, появился ли новый ключ.
+//
+// Уже известный keyId не трогается: клиент держит все ключи комнаты.
+// Не развернувшийся не теряется — сервер отдаёт его снова с каждым
+// GET /api/rooms.
+//
+// Заворачивает ключ участник комнаты — владелец или тот, кто им был
+// до передачи владения (ADR-018). Ключ от постороннего ника отвергается
+// до запроса его публичного ключа: TOFU запоминает первый ключ молча,
+// поэтому незнакомый распространитель — это подмена, а не первый
+// контакт (ADR-039).
+async function takeRoomKey(room) {
+  const wrapped = room.key;
+  if (!usableKey(wrapped) || !room.members.includes(wrapped.from)) {
+    return false;
+  }
+  if (await db.roomKey(room.id, wrapped.keyId)) {
+    return false;
+  }
+  let publicKey;
+  try {
+    publicKey = await senderKey(wrapped.from);
+  } catch {
+    // Ключа отправителя сейчас не добыть: попробуем при следующем ready.
+    return false;
+  }
+  if (publicKey === null) {
+    return false;
+  }
+  let key;
+  try {
+    key = await unwrapRoomKey(state.privateKey, publicKey, {
+      roomId: room.id,
+      keyId: wrapped.keyId,
+      from: wrapped.from,
+      to: state.nick,
+      iv: wrapped.iv,
+      ct: wrapped.ct,
+    });
+  } catch {
+    return false;
+  }
+  const stored = await db.saveRoomKey({
+    roomId: room.id,
+    keyId: wrapped.keyId,
+    key,
+    from: wrapped.from,
+  });
+  if (stored) {
+    state.roomKeys.set(`${room.id}|${wrapped.keyId}`, key);
+  }
+  return stored;
+}
+
+// applyRoom разбирает событие room: создание, смена состава, rekey, выход
+// участника (docs/protocol.md, «События»).
+async function applyRoom(room) {
+  if (!state.running || !usableRoom(room)) {
+    return;
+  }
+  const changed = await saveRoom(room);
+  const fresh = await takeRoomKey(room);
+  if (changed) {
+    announceChats();
+  }
+  announceRoom(room.id);
+  if (fresh) {
+    await reopen();
+    await retryPending();
+  }
+  // Участник вышел — комната осталась на ключе, который он знает. Новый
+  // раздаёт владелец тем же запросом с пустыми add и remove (ADR-018).
+  if (room.needsRekey === true && room.owner === state.nick) {
+    await rekey(room.id);
+  }
+}
+
+// refreshRooms перечитывает комнаты после каждого ready: события room
+// и room_left в очередь не кладутся (docs/protocol.md, «События»).
+async function refreshRooms() {
+  // Список известных комнат читается до запроса: комната, заведённая
+  // соседней вкладкой, пока ответ летел, в него не попадёт, а прятать
+  // её нельзя — она есть и на сервере, и в базе (ADR-035).
+  let known;
+  try {
+    known = await db.chats();
+  } catch {
+    known = [];
+  }
+  let list;
+  try {
+    list = await api.rooms();
+  } catch {
+    return;
+  }
+  if (!Array.isArray(list)) {
+    return;
+  }
+  let changed = false;
+  let fresh = false;
+  const seen = new Set();
+  for (const room of list) {
+    if (!usableRoom(room)) {
+      continue;
+    }
+    seen.add(room.id);
+    const moved = await saveRoom(room);
+    const key = await takeRoomKey(room);
+    changed = changed || moved;
+    fresh = fresh || key;
+    if (moved || key) {
+      announceRoom(room.id);
+    }
+    // Долг по ключу — состояние комнаты, а не свойство события (ADR-041):
+    // владелец поднимает его и после офлайна, и после перезагрузки вкладки.
+    // Отдаёт долг payRekeys — он идёт следом за refreshRooms.
+    if (room.needsRekey === true && room.owner === state.nick) {
+      state.owed.add(room.id);
+    }
+  }
+  // Комнату, из которой нас убрали, пока мы были офлайн, видно только так:
+  // события мы не получили, а в списке её больше нет.
+  for (const chat of known) {
+    if (chat.type === "room" && !seen.has(chat.roomId)) {
+      await db.hideChat(chat.id, true);
+      state.blocked.delete(chat.roomId);
+      state.owed.delete(chat.roomId);
+      announceRoom(chat.roomId);
+      changed = true;
+    }
+  }
+  if (changed) {
+    announceChats();
+  }
+  // retryPending зовёт afterReady следом — второй раз не нужно.
+  if (fresh) {
+    await reopen();
+  }
+}
+
+// forgetRoom убирает комнату из списка: нас удалили, комната удалена или
+// мы вышли сами. История на устройстве не трогается — она единственная
+// копия, а новых сообщений в этой комнате нам уже не доставят.
+async function forgetRoom(roomId) {
+  state.blocked.delete(roomId);
+  state.owed.delete(roomId);
+  const chatId = db.roomChatId(roomId);
+  const record = await db.chat(chatId);
+  if (!record || record.hidden) {
+    return;
+  }
+  await db.hideChat(chatId, true);
+  announceChats();
+  announceRoom(roomId);
+}
+
+// memberKeys — публичные ключи итогового состава с проверкой TOFU
+// (ADR-016, ADR-018). Ник с неподтверждённым ключом останавливает всю
+// операцию: rekey ему не выполняется, а состав без ключа невозможен.
+async function memberKeys(members) {
+  const keys = new Map();
+  const blocked = [];
+  for (const nick of members) {
+    if (nick === state.nick) {
+      keys.set(nick, state.publicKey);
+      continue;
+    }
+    const user = await api.user(nick);
+    const record = await seePeer(nick, user.publicKey);
+    if (record.pending) {
+      blocked.push(nick);
+      continue;
+    }
+    keys.set(nick, record.publicKey);
+  }
+  if (blocked.length > 0) {
+    throw new TrustNeeded(blocked);
+  }
+  return keys;
+}
+
+// distribute генерирует ключ комнаты и заворачивает его каждому участнику,
+// включая себя: заворачивание себе — ECDH(myPrivate, myPublic), тем же кодом
+// (docs/crypto.md, «Комната»). Сырые байты живут до конца заворачивания,
+// потом импортируются non-extractable и затираются.
+async function distribute(roomId, members, keys) {
+  const { keyId, bytes } = newRoomKey();
+  try {
+    const wrapped = [];
+    for (const nick of members) {
+      wrapped.push(await wrapRoomKey(
+        state.privateKey,
+        keys.get(nick),
+        { roomId, keyId, from: state.nick, to: nick },
+        bytes,
+      ));
+    }
+    return { keyId, wrapped, key: await importRoomKey(bytes) };
+  } finally {
+    wipe(bytes);
+  }
+}
+
+// keepRoomKey кладёт свой же розданный ключ: у распространителя он
+// не разворачивается, а берётся из сырых байт до их затирания.
+async function keepRoomKey(roomId, keyId, key) {
+  const stored = await db.saveRoomKey({ roomId, keyId, key, from: state.nick });
+  if (stored) {
+    state.roomKeys.set(`${roomId}|${keyId}`, key);
+  }
+  return stored;
+}
+
+// createRoom заводит комнату. Идентификатор генерирует клиент: ключ
+// заворачивается до запроса и привязан к roomId (ADR-037). Отдаёт chatId.
+export function createRoom(name) {
+  return serial(async () => {
+    const title = String(name ?? "").trim();
+    if (!state.running || title === "") {
+      return null;
+    }
+    const keys = await memberKeys([state.nick]);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const roomId = newId();
+      const { keyId, wrapped, key } = await distribute(roomId, [state.nick], keys);
+      let room;
+      try {
+        room = await api.createRoom(state.device, {
+          id: roomId,
+          name: title,
+          keyId,
+          keys: wrapped,
+        });
+      } catch (err) {
+        if (err instanceof ApiError && err.code === "room_conflict") {
+          continue;
+        }
+        throw err;
+      }
+      await keepRoomKey(roomId, keyId, key);
+      // Форма ответа так же непроверена, как форма события. Чужой
+      // идентификатор в ответе означал бы ключ, привязанный не к той
+      // комнате: roomId вплетён в info и AAD (ADR-037).
+      if (usableRoom(room) && room.id === roomId) {
+        await saveRoom(room);
+      }
+      announceChats();
+      announceRoom(roomId);
+      return db.roomChatId(roomId);
+    }
+    throw new Error("не удалось завести комнату");
+  });
+}
+
+// changeMembers — смена состава и rekey одним запросом (ADR-018): владелец
+// получает публичные ключи итогового состава с проверкой TOFU, генерирует
+// ключ, заворачивает каждому и только потом отправляет.
+//
+// Ники приходят уже приведёнными к форме ADR-019: их проверяет экран.
+export function changeMembers(roomId, { add = [], remove = [] } = {}) {
+  return serial(() => changeRoom(roomId, add, remove));
+}
+
+// rekey — новый ключ прежнему составу: тот же запрос с пустыми add
+// и remove (ADR-018). Зовётся у владельца, получившего room с needsRekey.
+// Неудача долг не снимает: попытка повторится после ready.
+async function rekey(roomId) {
+  state.owed.add(roomId);
+  try {
+    await changeRoom(roomId, [], []);
+  } catch (err) {
+    if (err instanceof TrustNeeded) {
+      // Владелец видит, чей ключ надо подтвердить, и повторяет операцию
+      // после подтверждения (ADR-016).
+      state.blocked.set(roomId, err.nicks);
+      announceRoom(roomId);
+      return;
+    }
+    // Сеть или отказ сервера: попытка повторится после следующего ready.
+  }
+}
+
+// payRekeys отдаёт долги по ключам комнат. Комната, которой мы больше
+// не владеем или из которой ушли, долг снимает: новый ключ раздаёт
+// её владелец.
+async function payRekeys() {
+  for (const roomId of [...state.owed]) {
+    let record;
+    try {
+      record = await db.chat(db.roomChatId(roomId));
+    } catch {
+      return;
+    }
+    if (!record || record.type !== "room" || record.hidden || record.owner !== state.nick) {
+      state.owed.delete(roomId);
+      if (state.blocked.delete(roomId)) {
+        announceRoom(roomId);
+      }
+      continue;
+    }
+    await rekey(roomId);
+  }
+}
+
+async function changeRoom(roomId, add, remove) {
+  if (!state.running) {
+    return null;
+  }
+  const record = await db.chat(db.roomChatId(roomId));
+  if (!record || record.type !== "room") {
+    throw new Error("нет такой комнаты");
+  }
+  const members = finalMembers(record.members ?? [], add, remove);
+  const keys = await memberKeys(members);
+  const { keyId, wrapped, key } = await distribute(roomId, members, keys);
+  const room = await api.changeMembers(roomId, { add, remove, keyId, keys: wrapped });
+  const stored = await keepRoomKey(roomId, keyId, key);
+  // Ключ роздан всему составу: долг закрыт, и подтверждать больше нечего.
+  state.owed.delete(roomId);
+  state.blocked.delete(roomId);
+  if (usableRoom(room)) {
+    await saveRoom(room);
+  }
+  announceChats();
+  announceRoom(roomId);
+  if (stored) {
+    await reopen();
+    await retryPending();
+  }
+  return room;
+}
+
+// finalMembers — итоговый состав: текущий без remove плюс add, без повторов
+// и с сохранением порядка.
+function finalMembers(current, add, remove) {
+  const gone = new Set(remove);
+  const seen = new Set();
+  const out = [];
+  for (const nick of [...current.filter((nick) => !gone.has(nick)), ...add]) {
+    if (seen.has(nick)) {
+      continue;
+    }
+    seen.add(nick);
+    out.push(nick);
+  }
+  return out;
+}
+
+// leaveRoom — «выйти из комнаты». Владение уходит участнику с наименьшим
+// joined_at, опустевшая комната удаляется — это дело сервера (ADR-018).
+export function leaveRoom(roomId) {
+  return serial(async () => {
+    await api.leaveRoom(state.device, roomId);
+    await forgetRoom(roomId);
+  });
+}
+
+// deleteRoom — «удалить комнату», только у владельца. Участникам уходит
+// room_left.
+export function deleteRoom(roomId) {
+  return serial(async () => {
+    await api.removeRoom(roomId);
+    await forgetRoom(roomId);
+  });
+}
+
 // --- отправка -----------------------------------------------------------
+
+// Postponed — отправить сейчас нечем, но причина пройдёт: нет ключа комнаты
+// или ключ собеседника изменился и ждёт подтверждения (ADR-016). Сообщение
+// остаётся pending и уходит, когда причина уйдёт.
+class Postponed extends Error {
+  constructor() {
+    super("отправка отложена");
+    this.name = "Postponed";
+  }
+}
 
 // send — новое исходящее сообщение. Пустая строка не отправляется;
 // предел в maxMessageChars держит строка ввода (docs/ui.md, «Чат»).
 // Отдаёт id записи или null, если отправлять нечего.
 export function send(chatId, text) {
   const body = String(text ?? "").trim();
-  if (!state.running || body === "" || db.peerOf(chatId) === null) {
+  const known = db.peerOf(chatId) !== null || db.roomIdOf(chatId) !== null;
+  if (!state.running || body === "" || !known) {
     return Promise.resolve(null);
   }
   return serial(() => attempt({ chatId, text: body }, null));
@@ -734,7 +1404,8 @@ const REUSE = 4 * 60 * 1000;
 // по часам.
 async function attempt(source, previousId, fresh = false) {
   const peer = db.peerOf(source.chatId);
-  if (peer === null) {
+  const roomId = db.roomIdOf(source.chatId);
+  if (peer === null && roomId === null) {
     state.pending.delete(previousId);
     return null;
   }
@@ -760,7 +1431,7 @@ async function attempt(source, previousId, fresh = false) {
     me: state.nick,
   });
   notify([message], stale ? [{ chatId: source.chatId, id: previousId }] : []);
-  const err = await post(message, peer);
+  const err = await post(message, peer, roomId);
   if (err === null) {
     return message.id;
   }
@@ -786,6 +1457,43 @@ function reusable(id) {
   return ms !== null && Math.abs(Date.now() - ms) < REUSE;
 }
 
+// dmEnvelope — конверт личного чата. Ключ собеседника изменился и ждёт
+// подтверждения — отправка блокируется (ADR-016): сообщение остаётся
+// pending и уходит после «доверять новому ключу».
+async function dmEnvelope(message, peer) {
+  const known = await db.peer(peer);
+  if (known?.pending) {
+    throw new Postponed();
+  }
+  const sealed = await sealMessage(await chatKey(peer), {
+    id: message.id,
+    chat: dmLabel(state.nick, peer),
+    from: state.nick,
+    keyId: DM_KEY_ID,
+    text: message.text,
+  });
+  return { id: message.id, to: { dm: peer }, keyId: DM_KEY_ID, iv: sealed.iv, ct: sealed.ct };
+}
+
+// roomEnvelope — конверт комнаты: keyId текущего ключа, chat — "room:<id>"
+// (docs/crypto.md, «Сообщение»). Ключа ещё нет — отправка откладывается
+// до его прихода.
+async function roomEnvelope(message, roomId) {
+  const keyId = await currentKeyId(roomId);
+  const key = keyId === null ? null : await roomKeyOf(roomId, keyId);
+  if (key === null) {
+    throw new Postponed();
+  }
+  const sealed = await sealMessage(key, {
+    id: message.id,
+    chat: roomLabel(roomId),
+    from: state.nick,
+    keyId,
+    text: message.text,
+  });
+  return { id: message.id, to: { room: roomId }, keyId, iv: sealed.iv, ct: sealed.ct };
+}
+
 // post шифрует и отдаёт конверт серверу. from в AAD — собственный ник:
 // сервер проставит то же значение из сессии, и AAD сойдётся у получателя
 // (docs/crypto.md, «Сообщение»).
@@ -793,23 +1501,12 @@ function reusable(id) {
 // Отдаёт null при 202 и отказ, если он был: судьбу отказа решает attempt —
 // clock_skew на переиспользованном идентификаторе кончается не полосой,
 // а второй попыткой.
-async function post(message, peer) {
+async function post(message, peer, roomId) {
   let envelope;
   try {
-    const sealed = await sealMessage(await chatKey(peer), {
-      id: message.id,
-      chat: dmLabel(state.nick, peer),
-      from: state.nick,
-      keyId: DM_KEY_ID,
-      text: message.text,
-    });
-    envelope = {
-      id: message.id,
-      to: { dm: peer },
-      keyId: DM_KEY_ID,
-      iv: sealed.iv,
-      ct: sealed.ct,
-    };
+    envelope = peer !== null
+      ? await dmEnvelope(message, peer)
+      : await roomEnvelope(message, roomId);
   } catch (err) {
     return err;
   }
@@ -860,10 +1557,12 @@ async function settle(message, err) {
   notify([failed]);
 }
 
-// transient — отказ, который пройдёт сам: запрос не дошёл или сервер
-// не справился. Повтор допустим (ADR-027).
+// transient — отказ, который пройдёт сам: запрос не дошёл, сервер
+// не справился или шифровать пока нечем. Повтор допустим (ADR-027).
 function transient(err) {
-  return err instanceof NetworkError || (err instanceof ApiError && err.status >= 500);
+  return err instanceof NetworkError
+    || err instanceof Postponed
+    || (err instanceof ApiError && err.status >= 500);
 }
 
 // --- действия экранов ---------------------------------------------------
@@ -873,7 +1572,7 @@ function transient(err) {
 // Ошибки — 404 unknown_user и 400 self (docs/ui.md, «Новый чат»).
 export async function openDm(peer) {
   const answer = await api.addContact(peer);
-  await rememberPeer(answer.nick, answer.publicKey);
+  await seePeer(answer.nick, answer.publicKey);
   const chatId = db.dmChatId(answer.nick);
   const existing = await db.chat(chatId);
   if (!existing || existing.hidden) {
@@ -906,6 +1605,18 @@ export async function markRead(chatId) {
 }
 
 // Чтение для экранов. Писать в базу им не нужно: всё, что меняет
-// состояние, живёт здесь. dmChatId и peerOf — форма ключа чата
-// (docs/storage.md): экраны собирают её из ника маршрута, а не из строки.
-export { chats, chat, message, messagesBefore, peer, dmChatId, peerOf, PAGE } from "./db.js";
+// состояние, живёт здесь. dmChatId, roomChatId, peerOf и roomIdOf — форма
+// ключа чата (docs/storage.md): экраны собирают её из ника или
+// идентификатора маршрута, а не из строки.
+export {
+  chats,
+  chat,
+  message,
+  messagesBefore,
+  peer,
+  dmChatId,
+  roomChatId,
+  peerOf,
+  roomIdOf,
+  PAGE,
+} from "./db.js";

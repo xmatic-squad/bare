@@ -26,6 +26,7 @@ import { DESKTOP, clear, wide } from "./ui/dom.js";
 import { renderAuth } from "./ui/auth.js";
 import { renderChat } from "./ui/chat.js";
 import { renderContact } from "./ui/contact.js";
+import { renderMembers } from "./ui/members.js";
 import { renderNew } from "./ui/new.js";
 import { renderSettings } from "./ui/settings.js";
 import { frame } from "./ui/shell.js";
@@ -69,9 +70,11 @@ const ctx = {
 
 // --- роутинг -----------------------------------------------------------
 
-// route разбирает hash. Маршруты — docs/ui.md, «Каркас»; комнаты придут
-// на этапе 3, до тех пор `#/room/…` — неизвестный путь и ведёт в список.
+// route разбирает hash. Маршруты — docs/ui.md, «Каркас». Ник — форма
+// ADR-019, идентификатор комнаты — 16 случайных байт base64url
+// (docs/crypto.md, «Идентификаторы»). Всё, что не разобралось, — список.
 const NICK_ROUTE = /^#\/(dm|contact)\/([a-z0-9_]{2,32})$/;
+const ROOM_ROUTE = /^#\/room\/([A-Za-z0-9_-]{22})(\/members)?$/;
 
 function route() {
   const hash = location.hash || "#/";
@@ -84,6 +87,10 @@ function route() {
   const nick = NICK_ROUTE.exec(hash);
   if (nick) {
     return { kind: nick[1], nick: nick[2] };
+  }
+  const room = ROOM_ROUTE.exec(hash);
+  if (room) {
+    return { kind: room[2] ? "members" : "room", roomId: room[1] };
   }
   return { kind: "root" };
 }
@@ -101,7 +108,14 @@ async function render() {
   }
   const where = route();
   // На десктопе `#/` показывает первый чат — тот, что вверху списка.
-  let chatId = where.kind === "dm" ? sync.dmChatId(where.nick) : null;
+  // У экранов «карточка контакта» и «участники» открытого чата нет:
+  // в сайдбаре не выделен никто.
+  let chatId = null;
+  if (where.kind === "dm") {
+    chatId = sync.dmChatId(where.nick);
+  } else if (where.kind === "room") {
+    chatId = sync.roomChatId(where.roomId);
+  }
   if (where.kind === "root" && wide()) {
     const list = await sync.chats().catch(() => []);
     if (mine !== state.paint) {
@@ -123,7 +137,9 @@ async function render() {
   } else if (where.kind === "new") {
     renderNew(main, ctx);
   } else if (where.kind === "contact") {
-    renderContact(main, ctx, where.nick);
+    parts.push(renderContact(main, ctx, where.nick));
+  } else if (where.kind === "members") {
+    parts.push(renderMembers(main, ctx, where.roomId));
   } else if (chatId !== null) {
     parts.push(renderChat(main, ctx, chatId));
   }

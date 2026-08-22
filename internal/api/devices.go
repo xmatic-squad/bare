@@ -115,6 +115,18 @@ func (s *server) device(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return id, true
 }
 
+// optionalDevice — то же для маршрутов, где заголовок необязателен:
+// он всего лишь просит не возвращать эхо отправившему устройству. Пустой
+// X-Device — пусто, непустой обязан быть своим устройством: правило
+// принадлежности общее для всех маршрутов, где устройство важно
+// (docs/protocol.md, «Общие правила»).
+func (s *server) optionalDevice(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if r.Header.Get("X-Device") == "" {
+		return "", true
+	}
+	return s.device(w, r)
+}
+
 func unknownDevice(w http.ResponseWriter) {
 	Error(w, http.StatusForbidden, "unknown_device", "это устройство не ваше")
 }

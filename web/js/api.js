@@ -181,6 +181,40 @@ export function removeContact(nick) {
   return request("DELETE", `/api/contacts/${encodeURIComponent(nick)}`);
 }
 
+// --- комнаты -----------------------------------------------------------
+
+// rooms — комнаты, где мы участники, каждая с нашим текущим завёрнутым
+// ключом (docs/protocol.md, «Комнаты»).
+export function rooms() {
+  return request("GET", "/api/rooms");
+}
+
+// createRoom заводит комнату. Идентификатор генерирует клиент: ключ
+// заворачивается до запроса и привязан к roomId (ADR-037). Занятый
+// идентификатор — 409 room_conflict, берётся новый.
+//
+// X-Device передаётся, чтобы это же устройство не получило комнату ещё
+// и событием: она приходит ответом (docs/protocol.md, «Комнаты»).
+export function createRoom(device, body) {
+  return request("POST", "/api/rooms", body, { device });
+}
+
+// changeMembers — смена состава и rekey одним запросом (ADR-018).
+export function changeMembers(id, body) {
+  return request("POST", `/api/rooms/${encodeURIComponent(id)}/members`, body);
+}
+
+// leaveRoom — выход из комнаты. X-Device передаётся по той же причине,
+// что и при создании: комната уходит из списка здесь же, а другим
+// устройствам вышедшего сервер шлёт room_left (ADR-041).
+export function leaveRoom(device, id) {
+  return request("POST", `/api/rooms/${encodeURIComponent(id)}/leave`, undefined, { device });
+}
+
+export function removeRoom(id) {
+  return request("DELETE", `/api/rooms/${encodeURIComponent(id)}`);
+}
+
 // --- сообщения ---------------------------------------------------------
 
 // sendMessage отдаёт конверт серверу; from и ts он поставит сам (ADR-017).
@@ -208,6 +242,10 @@ export function ack(device, ids) {
 export function stream(device, handlers) {
   const source = new EventSource(`/api/events?device=${encodeURIComponent(device)}`);
   source.addEventListener("msg", (event) => handlers.msg(parse(event.data)));
+  // room и room_left в очередь не кладутся: пропуск во время офлайна
+  // чинится перечитыванием GET /api/rooms после ready (docs/protocol.md).
+  source.addEventListener("room", (event) => handlers.room(parse(event.data)));
+  source.addEventListener("room_left", (event) => handlers.roomLeft(parse(event.data)));
   source.addEventListener("ready", () => handlers.ready());
   source.addEventListener("error", () => handlers.error(source.readyState === EventSource.CLOSED));
   return () => source.close();

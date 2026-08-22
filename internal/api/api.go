@@ -84,6 +84,12 @@ func New(cfg *config.Config, st *store.Store, static http.Handler, logw io.Write
 	mux.Handle("POST /api/contacts", private(http.HandlerFunc(s.addContact)))
 	mux.Handle("DELETE /api/contacts/{nick}", private(http.HandlerFunc(s.deleteContact)))
 
+	mux.Handle("GET /api/rooms", private(http.HandlerFunc(s.rooms)))
+	mux.Handle("POST /api/rooms", private(http.HandlerFunc(s.createRoom)))
+	mux.Handle("POST /api/rooms/{id}/members", private(http.HandlerFunc(s.updateMembers)))
+	mux.Handle("POST /api/rooms/{id}/leave", private(http.HandlerFunc(s.leaveRoom)))
+	mux.Handle("DELETE /api/rooms/{id}", private(http.HandlerFunc(s.deleteRoom)))
+
 	mux.Handle("GET /api/events", private(http.HandlerFunc(s.events)))
 	mux.Handle("POST /api/messages", private(http.HandlerFunc(s.sendMessage)))
 	mux.Handle("POST /api/ack", private(http.HandlerFunc(s.ack)))

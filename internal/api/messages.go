@@ -74,14 +74,23 @@ func (s *server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if in.To.Room != "" {
-		// Комнаты — этап 3. Участников нет ни у одной комнаты, потому что
-		// нет и самих комнат: единственный возможный ответ — not_member.
-		Error(w, http.StatusForbidden, "not_member", "вы не участник комнаты")
-		return
-	}
 	sess, _ := auth.From(r)
-	if _, ok := s.peer(w, r, in.To.DM, sess.Nick); !ok {
+	room := in.To.Room != ""
+	if room {
+		member, knownKey, err := s.st.RoomAccess(r.Context(), in.To.Room, sess.Nick, in.KeyID)
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
+		if !member {
+			Error(w, http.StatusForbidden, "not_member", "вы не участник комнаты")
+			return
+		}
+		if !knownKey {
+			Error(w, http.StatusBadRequest, "unknown_key", "у комнаты нет такого ключа")
+			return
+		}
+	} else if _, ok := s.peer(w, r, in.To.DM, sess.Nick); !ok {
 		return
 	}
 
@@ -92,7 +101,7 @@ func (s *server) sendMessage(w http.ResponseWriter, r *http.Request) {
 
 	env := envelope{
 		ID:    in.ID,
-		To:    target{DM: in.To.DM},
+		To:    target{DM: in.To.DM, Room: in.To.Room},
 		From:  sess.Nick,
 		KeyID: in.KeyID,
 		IV:    in.IV,
@@ -104,14 +113,21 @@ func (s *server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	devices, err := s.st.DeliverDM(r.Context(), store.Delivery{
+	delivery := store.Delivery{
 		From:     env.From,
 		To:       env.To.DM,
+		Room:     env.To.Room,
 		Exclude:  device,
 		MsgID:    env.ID,
 		Envelope: string(raw),
 		Now:      env.TS,
-	})
+	}
+	var devices []string
+	if room {
+		devices, err = s.st.DeliverRoom(r.Context(), delivery)
+	} else {
+		devices, err = s.st.DeliverDM(r.Context(), delivery)
+	}
 	if err != nil {
 		s.internal(w, r, err)
 		return

@@ -10,6 +10,7 @@ HTTP-API под `/api/`, JSON в обе стороны, `Content-Type: applicati
 - Тело запроса — до 32 КиБ, иначе `413 too_large`.
 - Rate limiting — `429` с `Retry-After` (секунды).
 - Неизвестный путь — `404 not_found`; неверный JSON — `400 bad_json`; валидация — `400 invalid` с полем `field`.
+- Форма запроса проверяется раньше прав и раньше существования сущностей: `bad_json`, `too_large` и `invalid` приходят и на запрос, который отвергли бы и по правам (ADR-043).
 - Сбой на стороне сервера — `500 internal`; причина остаётся в журнале сервера и клиенту не показывается (ADR-027).
 - Неподдерживаемый метод на известном пути — тоже `404 not_found`: кода `405` в протоколе нет (ADR-026).
 
@@ -31,7 +32,7 @@ Room {
   members: nick[],                       // по joined_at
   createdAt: number,
   key: {keyId, from, iv, ct} | null,     // текущий завёрнутый ключ для запрашивающего
-  needsRekey: boolean                    // только в событии после выхода участника
+  needsRekey: boolean                    // состав уменьшился, а нового ключа ещё не было (ADR-041)
 }
 
 WrappedKey { to: nick, iv: string, ct: string }
@@ -55,7 +56,7 @@ WrappedKey { to: nick, iv: string, ct: string }
 
 `POST /api/password {authKey, newAuthKey, blob, logoutOthers: bool}` → `204`. `401 invalid_credentials`, если `authKey` не подходит. Хеш и блоб меняются в одной транзакции; при `logoutOthers` удаляются все сессии кроме текущей.
 
-`DELETE /api/me {authKey}` → `204`. Удаляет пользователя каскадом; владение комнатами передаётся по ADR-018; пустые комнаты удаляются.
+`DELETE /api/me {authKey}` → `204`. Удаляет пользователя каскадом; владение комнатами передаётся по ADR-018; пустые комнаты удаляются. Удаление аккаунта — выход из всех его комнат: оставшимся участникам уходит `event: room` с `needsRekey: true`, каждому со своим ключом (ADR-041).
 
 `GET /api/users/{nick}` → `200 {nick, publicKey}` | `404 unknown_user`.
 
@@ -110,25 +111,25 @@ event: room_left  data: {id}         // получателя удалили ил
 event: ready      data: {}
 ```
 
-`msg` идёт через очередь и требует ACK. `room` и `room_left` в очередь не кладутся: клиент после каждого `ready` перечитывает `GET /api/rooms` и `GET /api/contacts`, поэтому пропуск события во время офлайна ничего не ломает.
+`msg` идёт через очередь и требует ACK. `room` и `room_left` в очередь не кладутся: клиент после каждого `ready` перечитывает `GET /api/rooms` и `GET /api/contacts`, поэтому пропуск события во время офлайна ничего не ломает. Всё, что несёт событие `room`, включая `needsRekey`, есть и в `GET /api/rooms` (ADR-041).
 
 `id` в SSE не используется; `Last-Event-ID` игнорируется — повторная выдача очереди после реконнекта и есть механизм восстановления.
 
 ## Комнаты
 
-`GET /api/rooms` → `200 Room[]` — комнаты, где пользователь участник, с его текущим ключом.
+`GET /api/rooms` → `200 Room[]` — комнаты, где пользователь участник, с его текущим ключом и признаком `needsRekey`: он состояние комнаты, а не свойство события, и переживает офлайн владельца (ADR-041).
 
-`POST /api/rooms {name, keyId, keys: WrappedKey[]}` → `201 Room`. `keys` — ровно одна запись, `to` равен нику создателя. Всем устройствам создателя кроме `X-Device` (если передан) уходит `event: room`.
+`POST /api/rooms {id, name, keyId, keys: WrappedKey[]}` → `201 Room`. `id` — 16 случайных байт base64url, генерирует клиент (ADR-037): ключ комнаты заворачивается до запроса и привязан к идентификатору. Занятый `id` — `409 room_conflict`, клиент берёт новый. `keys` — ровно одна запись, `to` равен нику создателя. Всем устройствам создателя кроме `X-Device` (если передан) уходит `event: room`.
 
-`POST /api/rooms/{id}/members {add: nick[], remove: nick[], keyId, keys: WrappedKey[]}` → `200 Room`. Только владелец (`403 not_owner`). Проверки: все `add` существуют (`404 unknown_user`), `remove` — участники, владельца удалить нельзя (`400 owner`), `keyId` новый для комнаты (`409 key_exists`), множество `keys[].to` равно итоговому составу (`400 keys_mismatch`). Пустые `add` и `remove` — чистый rekey. В одной транзакции: состав, `room_keys` для каждого участника, удаление ключей и членства удалённых, обрезка до двух последних `keyId`. После коммита: `event: room` всем участникам (каждому — с его ключом), `event: room_left` удалённым.
+`POST /api/rooms/{id}/members {add: nick[], remove: nick[], keyId, keys: WrappedKey[]}` → `200 Room`. Только владелец (`403 not_owner`). Проверки: все `add` существуют (`404 unknown_user`), `remove` — участники, владельца удалить нельзя (`400 owner`), `keyId` новый для комнаты (`409 key_exists`), множество `keys[].to` равно итоговому составу (`400 keys_mismatch`; повтор ника в `keys[].to` — тот же код). Форма `add` и `remove` проверяется раньше прав: ник не по форме — `400 invalid` с этим полем. Пустые `add` и `remove` — чистый rekey. В одной транзакции: состав, `room_keys` для каждого участника, удаление ключей и членства удалённых, обрезка до двух последних `keyId`, снятие `needsRekey`. После коммита: `event: room` всем участникам (каждому — с его ключом), `event: room_left` удалённым.
 
-`POST /api/rooms/{id}/leave` → `204`. Удаляет членство и ключи вышедшего. Если вышел владелец — владение получает участник с наименьшим `joined_at`; если никого не осталось — комната удаляется. Остальным — `event: room` с `needsRekey: true`.
+`POST /api/rooms/{id}/leave` → `204`. Удаляет членство и ключи вышедшего. Если вышел владелец — владение получает участник с наименьшим `joined_at`; если никого не осталось — комната удаляется. Остальным — `event: room` с `needsRekey: true`; другим устройствам вышедшего, кроме отправившего запрос, — `event: room_left` (ADR-041).
 
 `DELETE /api/rooms/{id}` → `204`. Только владелец. Всем участникам — `event: room_left`.
 
 ## Коды ошибок
 
-`unauthenticated`, `bad_origin`, `unknown_device`, `bad_json`, `invalid`, `invalid_nick`, `nick_taken`, `invite_required`, `invalid_invite`, `invalid_credentials`, `unknown_user`, `self`, `device_conflict`, `clock_skew`, `not_member`, `unknown_key`, `not_owner`, `owner`, `key_exists`, `keys_mismatch`, `not_found`, `rate_limited`, `too_large`, `internal`.
+`unauthenticated`, `bad_origin`, `unknown_device`, `bad_json`, `invalid`, `invalid_nick`, `nick_taken`, `invite_required`, `invalid_invite`, `invalid_credentials`, `unknown_user`, `self`, `device_conflict`, `room_conflict`, `clock_skew`, `not_member`, `unknown_key`, `not_owner`, `owner`, `key_exists`, `keys_mismatch`, `not_found`, `rate_limited`, `too_large`, `internal`.
 
 ## Статика и служебное
 

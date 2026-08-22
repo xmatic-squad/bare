@@ -16,10 +16,19 @@ const DAY_LONG = new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numer
 const DAY_SHORT = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" });
 const TIME = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
 
-// Тексты нерасшифрованного — docs/ui.md, «Чат». Ключа комнаты нет —
-// это про комнату; всё остальное в личном чате означает чужой ключ.
+// Тексты нерасшифрованного — docs/ui.md, «Чат». Строк там две, а причин
+// в записи три (docs/storage.md): «нет ключа комнаты» — это unknown_key
+// в комнате, всё остальное сводится к «ключ изменился».
 const NO_ROOM_KEY = "не удалось расшифровать: нет ключа комнаты";
 const KEY_CHANGED = "не удалось расшифровать: ключ изменился";
+
+// Сколько символов имени комнаты попадает в подсказку ввода. Строка ввода
+// растёт под placeholder так же, как под текст, и имя в 64 символа (ADR-018)
+// занимало бы три строки. Имя укорачивается многоточием, как в шапке, только
+// разметкой: text-overflow к placeholder не применяется. Двенадцать —
+// столько, чтобы «сообщение в #имя…» умещалось в одну строку на самом
+// узком из целевых экранов (360 px).
+const NAME_IN_HINT = 12;
 
 // Насколько далеко от низа ленты человек ещё считается «внизу»: пришедшее
 // сообщение подматывает ленту только тогда, когда он и так смотрит конец.
@@ -32,8 +41,18 @@ export function renderChat(root, ctx, chatId) {
     chatId,
     me: ctx.me.nick,
     peer: sync.peerOf(chatId),
+    roomId: sync.roomIdOf(chatId),
     limit: ctx.config?.maxMessageChars ?? LIMIT,
     alive: true,
+    // Имя комнаты; до чтения записи чата вместо него идентификатор,
+    // как в db.blankChat.
+    name: sync.roomIdOf(chatId),
+    // Ключ собеседника изменился и ждёт подтверждения: ввод заблокирован
+    // (ADR-016).
+    blocked: false,
+    // Комнаты у нас больше нет: вышли сами, убрал владелец, комната
+    // удалена. Ввод заблокирован, лента остаётся (ADR-044).
+    gone: false,
     // Лента: записи по возрастанию id и их строки в разметке.
     items: [],
     nodes: new Map(),
@@ -58,6 +77,18 @@ export function renderChat(root, ctx, chatId) {
     }
   });
   const offNet = sync.on("net", () => paintBar(view));
+  // Доверие к ключу собеседника меняет полосу и ввод; имя комнаты приходит
+  // из GET /api/rooms и события room, иногда позже первой отрисовки.
+  const offPeers = sync.on("peers", (detail) => {
+    if (view.peer !== null && detail.nick === view.peer) {
+      run(view, () => checkPeer(view));
+    }
+  });
+  const offRooms = sync.on("rooms", (detail) => {
+    if (view.roomId !== null && detail.id === view.roomId) {
+      run(view, () => refreshRoom(view));
+    }
+  });
   const media = matchMedia(DESKTOP);
   const onMedia = () => paint(view, true);
   media.addEventListener("change", onMedia);
@@ -68,6 +99,8 @@ export function renderChat(root, ctx, chatId) {
     view.alive = false;
     offMessages();
     offNet();
+    offPeers();
+    offRooms();
     media.removeEventListener("change", onMedia);
   };
 }
@@ -81,18 +114,63 @@ function run(view, task) {
 
 // --- разметка -----------------------------------------------------------
 
-// head — шапка: имя чата, по нажатию — карточка контакта. «назад» слева
-// нужен там, где виден один экран за раз; на десктопе его прячет CSS.
+// head — шапка: имя чата, по нажатию — участники комнаты или карточка
+// контакта (docs/ui.md, «Чат»). «назад» слева нужен там, где виден один
+// экран за раз; на десктопе его прячет CSS.
 function head(view) {
   const bar = el("div", "head");
   const back = el("button", "back back--chat", "назад");
   back.type = "button";
   back.addEventListener("click", () => view.ctx.go("#/"));
-  const title = el("button", "chat-title", `@${view.peer}`);
-  title.type = "button";
-  title.addEventListener("click", () => view.ctx.go(`#/contact/${view.peer}`));
-  bar.append(back, title);
+  view.title = el("button", "chat-title", titleText(view));
+  view.title.type = "button";
+  view.title.addEventListener("click", () => view.ctx.go(view.roomId !== null
+    ? `#/room/${view.roomId}/members`
+    : `#/contact/${view.peer}`));
+  bar.append(back, view.title);
   return bar;
+}
+
+function titleText(view) {
+  return view.roomId !== null ? `#${view.name}` : `@${view.peer}`;
+}
+
+// shortName — имя комнаты для подсказки ввода: длинное обрезается
+// многоточием. Считается символами, а не единицами utf-16: имя ограничено
+// символами (docs/protocol.md), и разрезать пару посередине незачем.
+function shortName(name) {
+  const chars = Array.from(name);
+  return chars.length > NAME_IN_HINT ? `${chars.slice(0, NAME_IN_HINT).join("")}…` : name;
+}
+
+// refreshRoom обновляет имя комнаты в шапке и placeholder ввода — имя
+// приходит от сервера и бывает известно позже первой отрисовки — и состояние
+// членства: комната, из состава которой нас больше нет, гасит ввод
+// и показывает полосу (ADR-044).
+async function refreshRoom(view, known) {
+  if (view.roomId === null) {
+    return;
+  }
+  let record = known;
+  if (record === undefined) {
+    try {
+      record = await sync.chat(view.chatId);
+    } catch {
+      return;
+    }
+  }
+  if (!view.alive) {
+    return;
+  }
+  view.name = record?.title || view.roomId;
+  view.title.textContent = titleText(view);
+  view.field.placeholder = `сообщение в #${shortName(view.name)}`;
+  // Скрытая запись комнаты — это room_left или собственный выход:
+  // отправлять больше некуда, и сервер ответил бы not_member.
+  view.gone = record?.hidden === true;
+  view.field.disabled = view.gone;
+  view.send.disabled = view.gone;
+  paintBar(view);
 }
 
 // composer — полоса состояния и строка ввода: рамка 1 px ink, слева «>»
@@ -118,10 +196,10 @@ function composer(view) {
   view.counter = el("span", "counter");
   view.counter.hidden = true;
 
-  const send = el("button", "input__send", ">");
-  send.type = "submit";
+  view.send = el("button", "input__send", ">");
+  view.send.type = "submit";
 
-  row.append(prompt, view.field, view.counter, el("span", "enter", "enter — отправить"), send);
+  row.append(prompt, view.field, view.counter, el("span", "enter", "enter — отправить"), view.send);
   form.append(view.bar, row);
 
   view.field.addEventListener("input", () => count(view));
@@ -152,7 +230,7 @@ function count(view) {
 
 function submit(view) {
   const text = view.field.value;
-  if (text.trim() === "") {
+  if (view.blocked || view.gone || text.trim() === "") {
     return;
   }
   view.field.value = "";
@@ -171,6 +249,11 @@ async function load(view) {
   } catch {
     // Базы нет — рисуем пустую ленту: отправка от этого не ломается.
   }
+  if (!view.alive) {
+    return;
+  }
+  await refreshRoom(view, record ?? null);
+  await checkPeer(view);
   if (!view.alive) {
     return;
   }
@@ -342,7 +425,7 @@ function text(view, record) {
   const node = el("div", "text");
   if (record.text === null) {
     node.classList.add("text--none");
-    node.textContent = view.peer === null && record.undecryptable === "unknown_key"
+    node.textContent = view.roomId !== null && record.undecryptable === "unknown_key"
       ? NO_ROOM_KEY
       : KEY_CHANGED;
     return node;
@@ -362,25 +445,82 @@ function text(view, record) {
   return node;
 }
 
-// paintBar — полоса над вводом. Причина одна за раз: отказ отправки
+// checkPeer — состояние доверия к ключу собеседника. Ключ изменился
+// и ждёт подтверждения — ввод заблокирован до «доверять новому ключу»
+// (docs/ui.md, «Чат»). В комнате блокировать нечего: ключ там симметричный,
+// а чьи ключи мешают rekey, показывает экран участников.
+async function checkPeer(view) {
+  if (view.peer === null) {
+    return;
+  }
+  let record = null;
+  try {
+    record = await sync.peer(view.peer);
+  } catch {
+    // Базы нет — считаем ключ прежним: отправка не блокируется.
+  }
+  if (!view.alive) {
+    return;
+  }
+  view.blocked = !!record?.pending;
+  // Ввод заблокирован целиком: и поле, и кнопка «>» на мобильном.
+  view.field.disabled = view.blocked;
+  view.send.disabled = view.blocked;
+  paintBar(view);
+}
+
+// paintBar — полоса над вводом. Причина одна за раз (ADR-033). Порядок:
+// комнаты у нас больше нет — перебивает всё, отправлять некуда (ADR-044);
+// предупреждение о ключе — только оно блокирует ввод в личном чате,
+// и пока оно висит, повторять отправку нечем (ADR-038); отказ отправки
 // перебивает «нет соединения», потому что он про конкретное сообщение
-// и уходит при следующей попытке (ADR-033).
+// и уходит при следующей попытке.
 function paintBar(view) {
+  if (view.gone) {
+    band(view, "bar bar--mark", "вы больше не участник комнаты", false);
+    return;
+  }
+  if (view.blocked) {
+    band(view, "bar bar--mark", `ключ @${view.peer} изменился. сверьте отпечаток лично.`, true);
+    return;
+  }
   const failed = lastFailed(view);
   if (failed) {
-    view.bar.className = "bar bar--mark";
-    view.bar.textContent = failed.error;
-    view.bar.hidden = false;
+    band(view, "bar bar--mark", failed.error, false);
     return;
   }
   if (!sync.online()) {
-    view.bar.className = "bar";
-    view.bar.textContent = "нет соединения";
-    view.bar.hidden = false;
+    band(view, "bar", "нет соединения", false);
     return;
   }
+  clear(view.bar);
   view.bar.hidden = true;
-  view.bar.textContent = "";
+}
+
+// band — сама полоса. Кнопка «доверять новому ключу» стоит в ней же:
+// подтверждение — единственный выход из состояния (ADR-016).
+function band(view, className, caption, trust) {
+  clear(view.bar);
+  view.bar.className = className;
+  view.bar.append(el("span", null, caption));
+  if (trust) {
+    const yes = el("button", "link", "доверять новому ключу");
+    yes.type = "button";
+    yes.addEventListener("click", () => {
+      yes.disabled = true;
+      run(view, async () => {
+        try {
+          await sync.trustKey(view.peer);
+        } finally {
+          // Удалось — полосу перерисует событие «peers»; нет — кнопка
+          // снова готова к нажатию.
+          yes.disabled = false;
+        }
+      });
+    });
+    view.bar.append(yes);
+  }
+  view.bar.hidden = false;
 }
 
 // lastFailed — последнее своё неотправленное сообщение с текстом отказа

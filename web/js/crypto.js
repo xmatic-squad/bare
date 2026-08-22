@@ -14,6 +14,8 @@ const INFO_AUTH = "bare-auth-v1";
 const INFO_KEK = "bare-kek-v1";
 const BLOB_AAD = "bare-blob-v1|";
 const DM_SALT = "bare-dm-v1";
+const WRAP_SALT = "bare-wrap-v1";
+const ROOM_AAD = "bare-roomkey-v1|";
 const MSG_AAD = "bare-msg-v1|";
 
 // DM_KEY_ID — keyId личного чата: ключ выводится из ECDH, отдельного
@@ -23,6 +25,10 @@ export const DM_KEY_ID = "dm";
 // Длина секрета аккаунта (ADR-014) и вектора инициализации AES-GCM.
 export const SECRET_LEN = 32;
 const IV_LEN = 12;
+
+// ROOM_KEY_LEN — ключ комнаты: 32 случайных байта (docs/crypto.md,
+// «Комната»).
+export const ROOM_KEY_LEN = 32;
 
 // ID_LEN — deviceId, keyId и roomId устроены одинаково: 16 случайных
 // байт base64url, 22 символа (docs/crypto.md, «Идентификаторы»).
@@ -288,6 +294,90 @@ export async function dmKey(privateKey, peerPublicJwk, me, peer) {
     false,
     ["encrypt", "decrypt"],
   );
+}
+
+// --- комната -----------------------------------------------------------
+
+// roomLabel — метка комнаты для AAD сообщения: "room:" + roomId. Совпадает
+// с ключом чата в IndexedDB, но собирается здесь: crypto.js не знает о базе.
+export function roomLabel(roomId) {
+  return `room:${roomId}`;
+}
+
+// newRoomKey — новый ключ комнаты: 32 случайных байта и случайный keyId
+// (docs/crypto.md, «Комната»). Сырые байты живут до конца заворачивания,
+// потом распространитель импортирует их себе non-extractable и затирает.
+export function newRoomKey() {
+  return { keyId: newId(), bytes: random(ROOM_KEY_LEN) };
+}
+
+// importRoomKey — ключ комнаты как non-extractable AES-GCM-256. Наружу
+// он больше не выходит: в IndexedDB кладётся объект CryptoKey.
+export function importRoomKey(bytes) {
+  return subtle.importKey("raw", bytes, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+// roomAad и wrapKey — ровно то, что написано в docs/crypto.md,
+// «Заворачивание участнику». Заворачивание самому себе идёт этим же кодом:
+// ECDH(myPrivate, myPublic), без исключений.
+function roomAad({ roomId, keyId, from, to }) {
+  return utf8(`${ROOM_AAD}${roomId}|${keyId}|${from}|${to}`);
+}
+
+async function wrapKey(privateKey, peerPublicJwk, roomId, keyId) {
+  const publicKey = await importPublic(peerPublicJwk);
+  const shared = await subtle.deriveBits({ name: "ECDH", public: publicKey }, privateKey, 256);
+  const material = await subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+  wipe(new Uint8Array(shared));
+  return subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: utf8(WRAP_SALT),
+      info: utf8(`${ROOM_AAD}${roomId}|${keyId}`),
+    },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+// wrapRoomKey заворачивает сырые байты ключа комнаты участнику. Отдаёт
+// запись keys[] запроса: {to, iv, ct} (docs/protocol.md, «Типы»).
+export async function wrapRoomKey(privateKey, memberPublicJwk, { roomId, keyId, from, to }, roomKey) {
+  const key = await wrapKey(privateKey, memberPublicJwk, roomId, keyId);
+  const iv = random(IV_LEN);
+  const ct = await subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: roomAad({ roomId, keyId, from, to }) },
+    key,
+    roomKey,
+  );
+  return { to, iv: b64url(iv), ct: b64url(ct) };
+}
+
+// unwrapRoomKey разворачивает завёрнутый нам ключ той же схемой и сразу
+// импортирует его non-extractable: сырые байты дальше не идут.
+// Публичный ключ отправителя проходит через TOFU до вызова (ADR-016).
+export async function unwrapRoomKey(privateKey, senderPublicJwk, { roomId, keyId, from, to, iv, ct }) {
+  const key = await wrapKey(privateKey, senderPublicJwk, roomId, keyId);
+  const nonce = unb64url(iv);
+  if (nonce.length !== IV_LEN) {
+    throw new Error("iv — не 12 байт");
+  }
+  const plain = await subtle.decrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: roomAad({ roomId, keyId, from, to }) },
+    key,
+    unb64url(ct),
+  );
+  const bytes = new Uint8Array(plain);
+  if (bytes.length !== ROOM_KEY_LEN) {
+    wipe(bytes);
+    throw new Error("ключ комнаты — не 32 байта");
+  }
+  const imported = await importRoomKey(bytes);
+  wipe(bytes);
+  return imported;
 }
 
 // --- сообщение ---------------------------------------------------------

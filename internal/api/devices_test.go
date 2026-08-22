@@ -151,6 +151,36 @@ func TestForeignDevice(t *testing.T) {
 	// Со своим устройством — обычная отправка.
 	expect(t, e.do(http.MethodPost, "/api/messages", message(ulid(nowMillis(), 4), "marta"),
 		with(petya), withDevice(petyaDevice)), http.StatusAccepted, "")
+
+	// Комнаты: заголовок здесь необязателен — он всего лишь просит не слать
+	// событие отправившему устройству, — но принадлежность проверяется
+	// та же (docs/protocol.md, «Общие правила», «Комнаты»).
+	room := map[string]any{
+		"id":    roomIDOf(40),
+		"name":  "общая",
+		"keyId": keyID(40),
+		"keys":  keysFor([]string{"petya"}, 40),
+	}
+	expect(t, e.do(http.MethodPost, "/api/rooms", room, with(petya), withDevice(martaDevice)),
+		http.StatusForbidden, "unknown_device")
+	expect(t, e.do(http.MethodPost, "/api/rooms", room, with(petya), withDevice("мусор")),
+		http.StatusForbidden, "unknown_device")
+	expect(t, e.do(http.MethodPost, "/api/rooms", room, with(petya), withDevice(deviceOf(9))),
+		http.StatusForbidden, "unknown_device")
+	// Отказ ничего не создал: идентификатор комнаты свободен.
+	expect(t, e.do(http.MethodPost, "/api/rooms", room, with(petya)), http.StatusCreated, "")
+
+	leave := "/api/rooms/" + roomIDOf(40) + "/leave"
+	expect(t, e.do(http.MethodPost, leave, nil, with(petya), withDevice(martaDevice)),
+		http.StatusForbidden, "unknown_device")
+	expect(t, e.do(http.MethodPost, leave, nil, with(petya), withDevice("мусор")),
+		http.StatusForbidden, "unknown_device")
+	// Отказ ничего не изменил: из комнаты никто не вышел.
+	if got := e.room(petya, roomIDOf(40)); got == nil {
+		t.Fatal("комната пропала после отказа по устройству")
+	}
+	expect(t, e.do(http.MethodPost, leave, nil, with(petya), withDevice(petyaDevice)),
+		http.StatusNoContent, "")
 }
 
 // Удаление устройства уносит очередь и сессии устройства.

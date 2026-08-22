@@ -256,12 +256,18 @@ func (s *server) deleteMe(w http.ResponseWriter, r *http.Request) {
 	if !s.confirm(w, in.AuthKey, u) {
 		return
 	}
-	// Устройства, сессии, контакты, членство и очереди уносит каскад.
-	// Комнаты, где пользователь владелец, требуют передачи владения
-	// (ADR-018) — это этап 3, до появления комнат случай не наступает.
-	if err := s.st.DeleteUser(r.Context(), u.Nick); err != nil {
+	// Устройства, сессии, контакты, членство, ключи комнат и очереди уносит
+	// каскад; комнаты, где пользователь владелец, меняют владельца или
+	// удаляются пустыми (ADR-018) — всё в одной транзакции хранилища.
+	changes, err := s.st.DeleteUser(r.Context(), u.Nick)
+	if err != nil {
 		s.internal(w, r, err)
 		return
+	}
+	// Удаление аккаунта — выход из всех его комнат: оставшимся уходит room
+	// с needsRekey, каждому со своим ключом (ADR-041).
+	for _, change := range changes {
+		s.sendRoom(r, change, "")
 	}
 	auth.ClearCookie(w)
 	noContent(w)

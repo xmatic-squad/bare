@@ -118,9 +118,14 @@ export function peerOf(chatId) {
   return chatId.startsWith(DM) ? chatId.slice(DM.length) : null;
 }
 
+// roomIdOf — какая комната; у личного чата комнаты нет.
+export function roomIdOf(chatId) {
+  return chatId.startsWith(ROOM) ? chatId.slice(ROOM.length) : null;
+}
+
 // blankChat — пустая запись чата по её ключу. title — имя без «@» и «#»:
-// сигил ставит экран. Комнате имя приходит из GET /api/rooms (этап 3),
-// до этого вместо имени стоит идентификатор.
+// сигил ставит экран. Комнате имя, владелец и состав приходят из
+// GET /api/rooms и события room; до этого вместо имени стоит идентификатор.
 export function blankChat(id) {
   const base = { id, title: "", lastId: null, lastReadId: null, unread: 0, hidden: false };
   const peer = peerOf(id);
@@ -159,6 +164,39 @@ export function chat(id) {
 
 export function putChat(record) {
   return put("chats", record);
+}
+
+// mergeChat правит поля чата, не трогая ленту и счётчики: чтение и запись
+// одной транзакцией, чтобы не разъехаться с параллельным markRead.
+// Недостающая запись заводится. Отдаёт, изменилось ли что-нибудь.
+export async function mergeChat(id, patch) {
+  const db = await open();
+  const tx = db.transaction("chats", "readwrite");
+  const store = tx.objectStore("chats");
+  const known = await value(store.get(id));
+  const record = known ?? blankChat(id);
+  // Новую запись пишем всегда: она могла совпасть с пустой по всем полям
+  // патча и осталась бы ненаписанной.
+  let changed = known === undefined;
+  for (const [key, next] of Object.entries(patch)) {
+    if (same(record[key], next)) {
+      continue;
+    }
+    record[key] = next;
+    changed = true;
+  }
+  if (changed) {
+    store.put(record);
+  }
+  await done(tx);
+  return changed;
+}
+
+function same(a, b) {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, i) => item === b[i]);
+  }
+  return a === b;
 }
 
 // markRead — чат прочитан: счётчик обнуляется, граница «новых» уезжает
@@ -307,6 +345,23 @@ export async function pendingMessages() {
   return out;
 }
 
+// undecryptable — всё, что не удалось расшифровать и что хранит raw для
+// повторной попытки (docs/storage.md). Индекса по этому в схеме нет, значит
+// проход курсором; попытка повторяется редко: при подтверждении ключа
+// и при появлении недостающего ключа комнаты.
+export async function undecryptable() {
+  const db = await open();
+  const store = db.transaction("messages", "readonly").objectStore("messages");
+  const out = [];
+  await cursor(store.openCursor(), (record) => {
+    if (record.undecryptable && record.raw) {
+      out.push(record);
+    }
+    return true;
+  });
+  return out;
+}
+
 // cursor обходит курсор, пока step не скажет «хватит».
 function cursor(request, step) {
   return new Promise((resolve, reject) => {
@@ -322,10 +377,59 @@ function cursor(request, step) {
   });
 }
 
+// --- ключи комнат -------------------------------------------------------
+
+// Ключ хранилища roomKeys — [roomId, keyId]; массив больше любой строки,
+// поэтому [roomId, []] — верхняя граница всех ключей комнаты, а [roomId] —
+// нижняя (тот же приём, что и в индексе "chat").
+function roomRange(roomId) {
+  return IDBKeyRange.bound([roomId], [roomId, []]);
+}
+
+export function roomKey(roomId, keyId) {
+  return get("roomKeys", [roomId, keyId]);
+}
+
+// roomKeysOf — все ключи комнаты по возрастанию receivedAt: последний
+// и есть текущий (docs/storage.md, ADR-042).
+export async function roomKeysOf(roomId) {
+  const db = await open();
+  const store = db.transaction("roomKeys", "readonly").objectStore("roomKeys");
+  const list = await value(store.getAll(roomRange(roomId)));
+  return list.sort((a, b) => a.receivedAt - b.receivedAt);
+}
+
+// saveRoomKey кладёт ключ комнаты, если такого ещё нет; отдаёт, случилось ли
+// это. Клиент держит все ключи комнаты и расшифровывает любым известным
+// (ADR-018), поэтому уже сохранённый ключ не перезаписывается.
+//
+// receivedAt строго больше времени всех прежних ключей комнаты: текущий ключ
+// — последний полученный этим устройством, а два rekey подряд укладываются
+// в одну миллисекунду (ADR-042, docs/storage.md).
+export async function saveRoomKey({ roomId, keyId, key, from }) {
+  const db = await open();
+  const tx = db.transaction("roomKeys", "readwrite");
+  const store = tx.objectStore("roomKeys");
+  const list = await value(store.getAll(roomRange(roomId)));
+  let receivedAt = Date.now();
+  let known = false;
+  for (const record of list) {
+    known = known || record.keyId === keyId;
+    if (record.receivedAt >= receivedAt) {
+      receivedAt = record.receivedAt + 1;
+    }
+  }
+  if (!known) {
+    store.put({ roomId, keyId, key, from, receivedAt });
+  }
+  await done(tx);
+  return !known;
+}
+
 // --- собеседники --------------------------------------------------------
 
 // peers — доверие к ключам, TOFU (ADR-016). Запись заводится при первом
-// получении ключа; сверка изменившегося ключа и pending — этап 3.
+// получении ключа; изменившийся ключ ложится в pending и ждёт подтверждения.
 export function peer(nick) {
   return get("peers", nick);
 }
