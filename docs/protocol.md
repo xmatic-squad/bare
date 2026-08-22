@@ -7,9 +7,10 @@ HTTP-API под `/api/`, JSON в обе стороны, `Content-Type: applicati
 - Аутентификация — cookie `bare_session` (ADR-021). Без неё — `401 unauthenticated`. Публичные: `GET /api/config`, `GET /api/kdf`, `POST /api/register`, `POST /api/login`.
 - На всех запросах кроме `GET`/`HEAD` заголовок `Origin` обязан равняться `BARE_ORIGIN`, иначе `403 bad_origin`.
 - Заголовок `X-Device: <deviceId>` обязателен на `/api/ack`, `/api/messages`, `/api/devices/{id}/push`; для `/api/events` устройство передаётся в query (`EventSource` не умеет заголовки). Устройство должно принадлежать пользователю сессии, иначе `403 unknown_device`.
-- Тело запроса — до 32 КиБ, иначе `413`.
+- Тело запроса — до 32 КиБ, иначе `413 too_large`.
 - Rate limiting — `429` с `Retry-After` (секунды).
 - Неизвестный путь — `404 not_found`; неверный JSON — `400 bad_json`; валидация — `400 invalid` с полем `field`.
+- Неподдерживаемый метод на известном пути — тоже `404 not_found`: кода `405` в протоколе нет (ADR-026).
 
 ## Типы
 
@@ -126,7 +127,7 @@ event: ready      data: {}
 
 ## Коды ошибок
 
-`unauthenticated`, `bad_origin`, `unknown_device`, `bad_json`, `invalid`, `invalid_nick`, `nick_taken`, `invite_required`, `invalid_invite`, `invalid_credentials`, `unknown_user`, `self`, `device_conflict`, `clock_skew`, `not_member`, `unknown_key`, `not_owner`, `owner`, `key_exists`, `keys_mismatch`, `not_found`, `rate_limited`.
+`unauthenticated`, `bad_origin`, `unknown_device`, `bad_json`, `invalid`, `invalid_nick`, `nick_taken`, `invite_required`, `invalid_invite`, `invalid_credentials`, `unknown_user`, `self`, `device_conflict`, `clock_skew`, `not_member`, `unknown_key`, `not_owner`, `owner`, `key_exists`, `keys_mismatch`, `not_found`, `rate_limited`, `too_large`.
 
 ## Статика и служебное
 

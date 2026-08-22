@@ -16,6 +16,7 @@
 ## Раскладка репозитория
 
 ```
+embed.go                         //go:embed web в корне модуля (ADR-025)
 cmd/bare/main.go                 подкоманды: serve, vapid, version
 internal/config/                 переменные BARE_*
 internal/store/                  SQLite, migrations/*.sql (embed), запросы

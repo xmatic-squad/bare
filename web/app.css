@@ -1,0 +1,56 @@
+/* айдентика «скобы» — docs/identity/brief.md, ADR-024 */
+
+:root {
+  --bone: #F7F5F0;
+  --ink: #1B1917;
+  --text2: #3C3B38;
+  --mute: #6E6D68;
+  --stone: #A9A59D;
+  --line: #E7E3DA;
+  --edge: #DEDCD6;
+  --mark: #C82D40;
+  --mark: oklch(55% 0.19 20);
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+
+  /* тема одна, светлая (ADR-024): системная тёмная ничего не перекрашивает */
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bone);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* заставка: знак и слово, больше пока ничего */
+
+.boot {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.boot .mark {
+  width: 20px;
+  height: 20px;
+}
+
+.boot .word {
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
