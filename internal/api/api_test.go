@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/xmatic-squad/bare/internal/api"
@@ -23,7 +24,34 @@ type env struct {
 	t   *testing.T
 	h   http.Handler
 	st  *store.Store
-	log *bytes.Buffer
+	log *syncLog
+	srv *httptest.Server
+}
+
+// syncLog — журнал сервера в памяти. Под замком, потому что пишут в него
+// и обработчики, вызванные напрямую, и обработчики настоящего сервера
+// из live: у них разные горутины.
+type syncLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *syncLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *syncLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+func (l *syncLog) Reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buf.Reset()
 }
 
 func newEnv(t *testing.T) *env { return invited(t, "") }
@@ -48,7 +76,7 @@ func invited(t *testing.T, code string) *env {
 		VAPIDPublic: "vapid",
 		InviteCode:  code,
 	}
-	e := &env{t: t, st: st, log: &bytes.Buffer{}}
+	e := &env{t: t, st: st, log: &syncLog{}}
 	e.h = api.New(cfg, st, static, e.log)
 	return e
 }
@@ -81,12 +109,28 @@ func (e *env) do(method, target string, body any, opts ...func(*http.Request)) *
 	return rec
 }
 
+// live поднимает настоящий сервер на том же обработчике. Нужен потоку
+// событий: httptest.ResponseRecorder не отдаёт тело, пока обработчик
+// не вернулся, а поток не возвращается никогда.
+func (e *env) live() *httptest.Server {
+	e.t.Helper()
+	if e.srv == nil {
+		e.srv = httptest.NewServer(e.h)
+		e.t.Cleanup(e.srv.Close)
+	}
+	return e.srv
+}
+
 func with(c *http.Cookie) func(*http.Request) {
 	return func(r *http.Request) {
 		if c != nil {
 			r.AddCookie(c)
 		}
 	}
+}
+
+func withDevice(id string) func(*http.Request) {
+	return func(r *http.Request) { r.Header.Set("X-Device", id) }
 }
 
 func withOrigin(value string) func(*http.Request) {

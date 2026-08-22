@@ -3,6 +3,15 @@
 
 const SVG = "http://www.w3.org/2000/svg";
 
+// DESKTOP — порог десктопа: сайдбар и чат рядом, один экран за раз кончается
+// (docs/ui.md, «Каркас»). Экраны спрашивают ширину в момент события, а не
+// перерисовываются на каждое изменение размера.
+export const DESKTOP = "(min-width: 760px)";
+
+export function wide() {
+  return matchMedia(DESKTOP).matches;
+}
+
 export function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) {

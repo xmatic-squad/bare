@@ -1,6 +1,10 @@
-// Обёртки над fetch. Форма запросов и ответов — docs/protocol.md:
-// JSON в обе стороны, cookie сессии, ошибка — {error, message}.
-// SSE и ACK появятся на этапе 2.
+// Обёртки над fetch и поток событий. Форма запросов и ответов —
+// docs/protocol.md: JSON в обе стороны, cookie сессии, ошибка —
+// {error, message}.
+
+// MAX_ACK — сколько идентификаторов принимает один POST /api/ack
+// (docs/protocol.md, «Сообщения»).
+export const MAX_ACK = 500;
 
 // ApiError — ответ сервера с кодом из перечня docs/protocol.md.
 export class ApiError extends Error {
@@ -30,6 +34,9 @@ const TEXT = {
   invite_required: "нужен инвайт-код",
   invalid_invite: "инвайт-код не подходит",
   rate_limited: "слишком часто, попробуйте позже",
+  unknown_user: "такого ника нет",
+  self: "нельзя писать себе",
+  clock_skew: "проверьте часы на устройстве: расхождение больше 5 минут",
 };
 
 export function errorText(err) {
@@ -53,11 +60,20 @@ export function onSessionExpired(handler) {
 
 // quiet: не звать expired() на 401 unauthenticated. Нужно ровно там, где
 // «сессии нет» — не конец сеанса, а ожидаемый ответ (dropSession).
-async function request(method, path, body, { quiet = false } = {}) {
+// device: заголовок X-Device — он обязателен там, где важно, с какого
+// устройства пришёл запрос (docs/protocol.md, «Общие правила»).
+async function request(method, path, body, { quiet = false, device = null } = {}) {
   const init = { method, credentials: "same-origin", cache: "no-store" };
+  const headers = {};
   if (body !== undefined) {
-    init.headers = { "Content-Type": "application/json" };
+    headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
+  }
+  if (device) {
+    headers["X-Device"] = device;
+  }
+  if (Object.keys(headers).length > 0) {
+    init.headers = headers;
   }
   let response;
   try {
@@ -127,4 +143,80 @@ export function password(body) {
 
 export function deleteMe(authKey) {
   return request("DELETE", "/api/me", { authKey });
+}
+
+export function user(nick) {
+  return request("GET", `/api/users/${encodeURIComponent(nick)}`);
+}
+
+// --- устройства --------------------------------------------------------
+
+// registerDevice — 201 при создании, 200 если устройство уже наше,
+// 409 device_conflict, если идентификатор занят другим (ADR-017).
+export function registerDevice(id) {
+  return request("POST", "/api/devices", { id });
+}
+
+export function devices() {
+  return request("GET", "/api/devices");
+}
+
+export function removeDevice(id) {
+  return request("DELETE", `/api/devices/${encodeURIComponent(id)}`);
+}
+
+// --- контакты ----------------------------------------------------------
+
+export function contacts() {
+  return request("GET", "/api/contacts");
+}
+
+// addContact заводит строку списка чатов и отдаёт публичный ключ
+// собеседника: 404 unknown_user, 400 self (ADR-019).
+export function addContact(nick) {
+  return request("POST", "/api/contacts", { nick });
+}
+
+export function removeContact(nick) {
+  return request("DELETE", `/api/contacts/${encodeURIComponent(nick)}`);
+}
+
+// --- сообщения ---------------------------------------------------------
+
+// sendMessage отдаёт конверт серверу; from и ts он поставит сам (ADR-017).
+// Ответ — 202 {id, ts}.
+export function sendMessage(device, envelope) {
+  return request("POST", "/api/messages", envelope, { device });
+}
+
+// ack подтверждает запись сообщений в IndexedDB: сервер убирает их
+// из очереди устройства (docs/storage.md). Не больше MAX_ACK за раз.
+export function ack(device, ids) {
+  return request("POST", "/api/ack", { ids }, { device });
+}
+
+// --- события -----------------------------------------------------------
+
+// stream открывает поток событий устройства (docs/protocol.md, «События»).
+// Устройство передаётся в query: EventSource не умеет заголовки.
+//
+// Переподключение делает браузер сам. Ответ не 200 он считает
+// окончательным отказом и больше не подключается — это видно
+// по readyState CLOSED и передаётся в handlers.error вторым состоянием.
+//
+// Отдаёт функцию закрытия потока.
+export function stream(device, handlers) {
+  const source = new EventSource(`/api/events?device=${encodeURIComponent(device)}`);
+  source.addEventListener("msg", (event) => handlers.msg(parse(event.data)));
+  source.addEventListener("ready", () => handlers.ready());
+  source.addEventListener("error", () => handlers.error(source.readyState === EventSource.CLOSED));
+  return () => source.close();
+}
+
+function parse(data) {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
 }

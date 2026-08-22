@@ -14,6 +14,7 @@ import (
 // base64url, длины, версии (docs/crypto.md, «Что сервер проверяет»).
 const (
 	authKeyLen = 32      // байт
+	idLen      = 16      // байт: deviceId, keyId, roomId
 	ivLen      = 12      // байт
 	minCTLen   = 16      // байт: короче тега AES-GCM шифротекста не бывает
 	maxBlob    = 8 << 10 // ключевой блоб, docs/protocol.md
@@ -38,6 +39,13 @@ func decodeExactly(s string, n int) ([]byte, bool) {
 
 // authKey разбирает authKey клиента: base64url ровно 32 байта.
 func authKey(s string) ([]byte, bool) { return decodeExactly(s, authKeyLen) }
+
+// validID — deviceId, keyId и roomId устроены одинаково: 16 случайных
+// байт base64url, 22 символа (docs/crypto.md, «Идентификаторы»).
+func validID(s string) bool {
+	_, ok := decodeExactly(s, idLen)
+	return ok
+}
 
 // jwkPublic — публичный ключ в том виде, в каком сервер его хранит
 // и отдаёт: четыре поля и ничего больше.

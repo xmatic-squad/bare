@@ -6,6 +6,7 @@
 
 import * as api from "./api.js";
 import * as db from "./db.js";
+import * as sync from "./sync.js";
 import {
   deriveAccountKeys,
   exportPrivateJwk,
@@ -21,8 +22,11 @@ import {
   validIterations,
   wipe,
 } from "./crypto.js";
-import { clear } from "./ui/dom.js";
+import { DESKTOP, clear, wide } from "./ui/dom.js";
 import { renderAuth } from "./ui/auth.js";
+import { renderChat } from "./ui/chat.js";
+import { renderContact } from "./ui/contact.js";
+import { renderNew } from "./ui/new.js";
 import { renderSettings } from "./ui/settings.js";
 import { frame } from "./ui/shell.js";
 
@@ -32,7 +36,7 @@ const MIN_PASSWORD = 12;
 // Ник — ADR-019. Клиент проверяет ту же форму, что и сервер.
 const NICK = /^[a-z0-9_]{2,32}$/;
 
-const state = { config: null, me: null };
+const state = { config: null, me: null, dispose: null, paint: 0, shown: null };
 
 // AccountError — то, что случилось с ключевым материалом, а не с сетью.
 // Сообщение уже пригодно для показа человеку (ADR-028).
@@ -65,22 +69,83 @@ const ctx = {
 
 // --- роутинг -----------------------------------------------------------
 
-// render рисует экран под текущий hash. Маршруты — docs/ui.md, «Каркас»;
-// на этом этапе есть только список и настройки, остальные ведут в пустой
-// список: чатов, контактов и комнат ещё нет.
-function render() {
+// route разбирает hash. Маршруты — docs/ui.md, «Каркас»; комнаты придут
+// на этапе 3, до тех пор `#/room/…` — неизвестный путь и ведёт в список.
+const NICK_ROUTE = /^#\/(dm|contact)\/([a-z0-9_]{2,32})$/;
+
+function route() {
+  const hash = location.hash || "#/";
+  if (hash === "#/settings") {
+    return { kind: "settings" };
+  }
+  if (hash === "#/new") {
+    return { kind: "new" };
+  }
+  const nick = NICK_ROUTE.exec(hash);
+  if (nick) {
+    return { kind: nick[1], nick: nick[2] };
+  }
+  return { kind: "root" };
+}
+
+// render рисует экран под текущий hash. Перерисовка гасит подписки
+// прежнего экрана: список чатов и лента слушают sync.
+async function render() {
+  const mine = ++state.paint;
   const app = document.getElementById("app");
-  clear(app);
   if (!state.me) {
+    release();
+    clear(app);
     renderAuth(app, ctx);
     return;
   }
-  const settings = (location.hash || "#/") === "#/settings";
-  const { root, main } = frame(ctx, settings ? "screen" : "list");
-  if (settings) {
-    renderSettings(main, ctx);
+  const where = route();
+  // На десктопе `#/` показывает первый чат — тот, что вверху списка.
+  let chatId = where.kind === "dm" ? sync.dmChatId(where.nick) : null;
+  if (where.kind === "root" && wide()) {
+    const list = await sync.chats().catch(() => []);
+    if (mine !== state.paint) {
+      return;
+    }
+    chatId = list.length > 0 ? list[0].id : null;
   }
+
+  release();
+  clear(app);
+  state.shown = chatId;
+  const { root, main, dispose } = frame(ctx, where.kind === "root" ? "list" : "screen", chatId);
+  // Сначала в документ, потом содержимое: экраны ставят фокус и мотают
+  // ленту, а на неприсоединённом узле это не работает.
   app.append(root);
+  const parts = [dispose];
+  if (where.kind === "settings") {
+    renderSettings(main, ctx);
+  } else if (where.kind === "new") {
+    renderNew(main, ctx);
+  } else if (where.kind === "contact") {
+    renderContact(main, ctx, where.nick);
+  } else if (chatId !== null) {
+    parts.push(renderChat(main, ctx, chatId));
+  }
+  state.dispose = () => parts.forEach((off) => off());
+}
+
+function release() {
+  if (state.dispose) {
+    state.dispose();
+    state.dispose = null;
+  }
+  state.shown = null;
+}
+
+// Первый чат на десктопе показывается и тогда, когда список приехал позже
+// экрана: после входа на новом устройстве чаты приходят с контактами, уже
+// после первой отрисовки. Открытый чат при этом не трогаем — иначе новое
+// сообщение в соседнем чате уводило бы из текущего.
+function fill() {
+  if (state.me && state.shown === null && route().kind === "root" && wide()) {
+    render();
+  }
 }
 
 function go(hash) {
@@ -234,6 +299,13 @@ async function adopt(nick, priv, secret) {
     accountSecret: await importSecret(secret),
   });
   state.me = { nick, publicKey, fingerprint };
+  connect();
+}
+
+// connect поднимает поток событий и синхронизацию. Отказы разбирает сам
+// sync: экран входа их уже не касается.
+function connect() {
+  sync.start().catch(() => {});
 }
 
 // raise — автоматическое повышение итераций сразу после входа, молча
@@ -303,6 +375,7 @@ async function signOut() {
 // forget уносит историю: она на этом устройстве единственная копия
 // (docs/storage.md, docs/ui.md).
 async function forget() {
+  sync.stop();
   await db.destroy();
   state.me = null;
 }
@@ -318,6 +391,25 @@ function errorText(err) {
 
 async function boot() {
   db.persist();
+  // Обработчик ставится раньше первого запроса: 401 unauthenticated
+  // на любом из них — на экран входа, IndexedDB цела.
+  api.onSessionExpired(() => {
+    if (state.me) {
+      sync.stop();
+      state.me = null;
+      render();
+    }
+  });
+  addEventListener("hashchange", render);
+  // Перелом ширины меняет только выбор маршрута: на десктопе `#/` — первый
+  // чат, на мобильном — список. Открытый экран не трогаем: в нём набранный
+  // текст, а всё остальное разбирает CSS.
+  matchMedia(DESKTOP).addEventListener("change", () => {
+    if (route().kind === "root") {
+      render();
+    }
+  });
+  sync.on("chats", fill);
   try {
     await ensureConfig();
   } catch {
@@ -325,14 +417,9 @@ async function boot() {
   }
   state.me = await restore();
   render();
-  addEventListener("hashchange", render);
-  // 401 unauthenticated на любом запросе — на экран входа, IndexedDB цела.
-  api.onSessionExpired(() => {
-    if (state.me) {
-      state.me = null;
-      render();
-    }
-  });
+  if (state.me) {
+    connect();
+  }
 }
 
 boot();

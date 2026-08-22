@@ -13,10 +13,20 @@ const SALT_PREFIX = "bare-v1:";
 const INFO_AUTH = "bare-auth-v1";
 const INFO_KEK = "bare-kek-v1";
 const BLOB_AAD = "bare-blob-v1|";
+const DM_SALT = "bare-dm-v1";
+const MSG_AAD = "bare-msg-v1|";
+
+// DM_KEY_ID — keyId личного чата: ключ выводится из ECDH, отдельного
+// идентификатора у него нет (docs/crypto.md, «Сообщение»).
+export const DM_KEY_ID = "dm";
 
 // Длина секрета аккаунта (ADR-014) и вектора инициализации AES-GCM.
 export const SECRET_LEN = 32;
 const IV_LEN = 12;
+
+// ID_LEN — deviceId, keyId и roomId устроены одинаково: 16 случайных
+// байт base64url, 22 символа (docs/crypto.md, «Идентификаторы»).
+const ID_LEN = 16;
 
 // Границы числа итераций PBKDF2 (ADR-013, ADR-030). Число приходит от
 // сервера — в ответе /api/kdf, /api/config или полем iter в блобе, — а
@@ -45,6 +55,11 @@ export function random(length) {
   const bytes = new Uint8Array(length);
   globalThis.crypto.getRandomValues(bytes);
   return bytes;
+}
+
+// newId — идентификатор устройства, ключа комнаты или комнаты.
+export function newId() {
+  return b64url(random(ID_LEN));
 }
 
 export function b64url(input) {
@@ -239,4 +254,83 @@ export async function openBlob(blob, kek, nick) {
     throw new Error("секрет аккаунта — не 32 байта");
   }
   return { priv: parsed.priv, secret };
+}
+
+// --- чат 1:1 -----------------------------------------------------------
+
+// order — ники пары по возрастанию. Сравниваются кодовые единицы, а не
+// буквы языка: ник — это [a-z0-9_], и порядок обязан совпасть у обеих
+// сторон побайтно (docs/crypto.md, «Чат 1:1»).
+export function order(a, b) {
+  return a < b ? [a, b] : [b, a];
+}
+
+// dmLabel — метка чата для AAD сообщения: "dm:" + a + ":" + b.
+// Это не ключ хранилища chats: там чат зовётся "dm:<собеседник>".
+export function dmLabel(a, b) {
+  const [first, second] = order(a, b);
+  return `dm:${first}:${second}`;
+}
+
+// dmKey выводит ключ личного чата (docs/crypto.md, «Чат 1:1»).
+// Ключ симметричен для обеих сторон и всех их устройств; в IndexedDB
+// не пишется — выводится заново из peers.
+export async function dmKey(privateKey, peerPublicJwk, me, peer) {
+  const [a, b] = order(me, peer);
+  const publicKey = await importPublic(peerPublicJwk);
+  const shared = await subtle.deriveBits({ name: "ECDH", public: publicKey }, privateKey, 256);
+  const material = await subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+  wipe(new Uint8Array(shared));
+  return subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: utf8(DM_SALT), info: utf8(`${a}\0${b}`) },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+// --- сообщение ---------------------------------------------------------
+
+// messageAad привязывает открытые поля конверта к шифротексту: подмена
+// любого из них ломает расшифровку (docs/crypto.md, «Сообщение»).
+function messageAad({ id, chat, from, keyId }) {
+  return utf8(`${MSG_AAD}${id}|${chat}|${from}|${keyId}`);
+}
+
+// sealMessage шифрует текст сообщения. plain — JSON {"t": текст};
+// ничего кроме текста внутрь не кладётся.
+export async function sealMessage(key, { id, chat, from, keyId, text }) {
+  const iv = random(IV_LEN);
+  const plain = utf8(JSON.stringify({ t: text }));
+  const ct = await subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: messageAad({ id, chat, from, keyId }) },
+    key,
+    plain,
+  );
+  wipe(plain);
+  return { iv: b64url(iv), ct: b64url(ct) };
+}
+
+// openMessage расшифровывает конверт и отдаёт текст. Бросает при любой
+// порче: не тот ключ, изменившиеся открытые поля, битый base64url.
+// Для вызывающего это не фатально — сообщение сохраняется нерасшифрованным
+// с кодом причины (docs/storage.md).
+export async function openMessage(key, { id, chat, from, keyId, iv, ct }) {
+  const nonce = unb64url(iv);
+  if (nonce.length !== IV_LEN) {
+    throw new Error("iv — не 12 байт");
+  }
+  const plain = await subtle.decrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: messageAad({ id, chat, from, keyId }) },
+    key,
+    unb64url(ct),
+  );
+  const bytes = new Uint8Array(plain);
+  const parsed = JSON.parse(decoder.decode(bytes));
+  wipe(bytes);
+  if (parsed === null || typeof parsed !== "object" || typeof parsed.t !== "string") {
+    throw new Error("в сообщении нет текста");
+  }
+  return parsed.t;
 }

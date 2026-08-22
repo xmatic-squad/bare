@@ -80,8 +80,9 @@ func serve() error {
 		fmt.Printf("bare применил миграцию %s\n", name)
 	}
 
+	h := api.New(cfg, st, static, os.Stdout)
 	srv := &http.Server{
-		Handler:           api.New(cfg, st, static, os.Stdout),
+		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		// OPTIONS * иначе обслуживает net/http сам, в обход middleware:
@@ -89,6 +90,10 @@ func serve() error {
 		DisableGeneralOptionsHandler: true,
 		// WriteTimeout не задаётся: впереди SSE с долгими ответами (ADR-004).
 	}
+
+	// Потоки событий не заканчиваются сами: без этого Shutdown ждал бы,
+	// пока подключённые клиенты уйдут, до самого таймаута (ADR-004).
+	srv.RegisterOnShutdown(h.Close)
 
 	// Сначала bind, потом сообщение: строка в журнале означает, что порт занят
 	// нами, а не то, что мы собирались его занять.

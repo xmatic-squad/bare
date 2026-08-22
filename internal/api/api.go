@@ -15,6 +15,7 @@ import (
 
 	"github.com/xmatic-squad/bare/internal/auth"
 	"github.com/xmatic-squad/bare/internal/config"
+	"github.com/xmatic-squad/bare/internal/hub"
 	"github.com/xmatic-squad/bare/internal/store"
 )
 
@@ -27,17 +28,36 @@ const maxLogPath = 256
 // csp — политика из ADR-021. HSTS ставит nginx, здесь его нет.
 const csp = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
-// server — общее для обработчиков: настройки, база, куда писать журнал.
+// server — общее для обработчиков: настройки, база, открытые потоки
+// событий, лимиты, куда писать журнал.
 type server struct {
 	cfg  *config.Config
 	st   *store.Store
+	hub  *hub.Hub
+	msgs *buckets
 	logw io.Writer
 }
 
+// Handler — обработчик всех маршрутов и живые SSE-потоки за ним.
+type Handler struct {
+	http.Handler
+	hub *hub.Hub
+}
+
+// Close закрывает открытые потоки событий. Без него остановка сервера
+// ждала бы, пока клиенты уйдут сами: у потока нет конца (ADR-004).
+func (h *Handler) Close() { h.hub.CloseAll() }
+
 // New собирает обработчик: /api/, /healthz, всё остальное — статика.
 // logw — куда писать строки запросов и причины отказов; nil отключает лог.
-func New(cfg *config.Config, st *store.Store, static http.Handler, logw io.Writer) http.Handler {
-	s := &server{cfg: cfg, st: st, logw: logw}
+func New(cfg *config.Config, st *store.Store, static http.Handler, logw io.Writer) *Handler {
+	s := &server{
+		cfg:  cfg,
+		st:   st,
+		hub:  hub.New(),
+		msgs: newBuckets(messagesPerMinute, messagesBurst),
+		logw: logw,
+	}
 	fail := auth.Fail{Error: Error, Internal: s.internal}
 	// Сессия проверяется на всех непубличных маршрутах (docs/protocol.md).
 	private := auth.Require(st, fail)
@@ -56,13 +76,28 @@ func New(cfg *config.Config, st *store.Store, static http.Handler, logw io.Write
 	mux.Handle("POST /api/password", private(http.HandlerFunc(s.password)))
 	mux.Handle("GET /api/users/{nick}", private(http.HandlerFunc(s.user)))
 
+	mux.Handle("POST /api/devices", private(http.HandlerFunc(s.createDevice)))
+	mux.Handle("GET /api/devices", private(http.HandlerFunc(s.devices)))
+	mux.Handle("DELETE /api/devices/{id}", private(http.HandlerFunc(s.deleteDevice)))
+
+	mux.Handle("GET /api/contacts", private(http.HandlerFunc(s.contacts)))
+	mux.Handle("POST /api/contacts", private(http.HandlerFunc(s.addContact)))
+	mux.Handle("DELETE /api/contacts/{nick}", private(http.HandlerFunc(s.deleteContact)))
+
+	mux.Handle("GET /api/events", private(http.HandlerFunc(s.events)))
+	mux.Handle("POST /api/messages", private(http.HandlerFunc(s.sendMessage)))
+	mux.Handle("POST /api/ack", private(http.HandlerFunc(s.ack)))
+
 	// Всё прочее под /api/ — 404, включая неподдерживаемый метод известного
 	// пути: кода 405 в протоколе нет (ADR-026). Этот маршрут заодно не даёт
 	// запросам к /api/ уходить в обработчик статики.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { NotFound(w) })
 	mux.Handle("/", static)
 
-	return logging(logw, headers(auth.Origin(cfg.Origin, fail)(limitBody(mux))))
+	return &Handler{
+		Handler: logging(logw, headers(auth.Origin(cfg.Origin, fail)(limitBody(mux)))),
+		hub:     s.hub,
+	}
 }
 
 func healthz(w http.ResponseWriter, r *http.Request) {
