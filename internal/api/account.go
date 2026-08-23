@@ -31,7 +31,10 @@ func (s *server) config(w http.ResponseWriter, r *http.Request) {
 //
 // Значение лежит открытым полем iter в ключевом блобе: другого места
 // у него нет (docs/crypto.md). Неизвестный ник получает целевое значение
-// тем же статусом 200 — ответ не раскрывает, существует ли ник (ADR-015).
+// тем же статусом 200. Скрытием существования ника этот ответ
+// не занимается: после повышения цели у аккаунта, который с тех пор
+// не входил, iter свой, и по числу его видно (ADR-062). Существование
+// ника публично и так (ADR-019).
 func (s *server) kdf(w http.ResponseWriter, r *http.Request) {
 	iterations := config.KDFIterations
 	if nick := r.URL.Query().Get("nick"); validNick(nick) {
@@ -66,16 +69,9 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if code := s.cfg.InviteCode; code != "" {
-		if in.Invite == "" {
-			Error(w, http.StatusForbidden, "invite_required", "нужен инвайт-код")
-			return
-		}
-		if subtle.ConstantTimeCompare([]byte(code), []byte(in.Invite)) != 1 {
-			Error(w, http.StatusForbidden, "invalid_invite", "инвайт-код не подходит")
-			return
-		}
-	}
+	// Форма — раньше инвайт-кода: он даёт право регистрироваться, а права
+	// идут после формы (ADR-043). Занятость ника этим не выдаётся: nick_taken
+	// живёт дальше по тексту, за инвайтом.
 	if !validNick(in.Nick) {
 		Error(w, http.StatusBadRequest, "invalid_nick", "ник: 2–32 символа, a–z, 0–9, _")
 		return
@@ -93,6 +89,22 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	if _, err := blobIterations(in.Blob); err != nil {
 		Invalid(w, "blob", err.Error())
 		return
+	}
+	// Лимит — 5 в час на IP (ADR-021) — стоит раньше проверки инвайт-кода:
+	// иначе код подбирался бы запросами без счёта.
+	if wait, ok := s.regs.take(clientIP(r), time.Now()); !ok {
+		s.rateLimited(w, wait)
+		return
+	}
+	if code := s.cfg.InviteCode; code != "" {
+		if in.Invite == "" {
+			Error(w, http.StatusForbidden, "invite_required", "нужен инвайт-код")
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(code), []byte(in.Invite)) != 1 {
+			Error(w, http.StatusForbidden, "invalid_invite", "инвайт-код не подходит")
+			return
+		}
 	}
 
 	cred, err := auth.Hash(key)
@@ -137,6 +149,14 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 	key, ok := authKey(in.AuthKey)
 	if !ok || !validNick(in.Nick) {
 		invalidCredentials(w)
+		return
+	}
+	// Лимит — 10 за 10 минут на пару IP+ник (ADR-021) — стоит раньше
+	// хранилища и argon2: перебор не должен заказывать серверу работу.
+	// Ключ ведра собирается из адреса и ника через байт, которого нет
+	// ни в том ни в другом.
+	if wait, ok := s.logins.take(clientIP(r)+"\x00"+in.Nick, time.Now()); !ok {
+		s.rateLimited(w, wait)
 		return
 	}
 	u, err := s.st.User(r.Context(), in.Nick)
@@ -234,9 +254,17 @@ func (s *server) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess, _ := auth.From(r)
-	if err := s.st.SetPassword(r.Context(), u.Nick, cred, in.Blob, in.LogoutOthers, sess.TokenHash); err != nil {
+	revoked, err := s.st.SetPassword(r.Context(), u.Nick, cred, in.Blob, in.LogoutOthers, sess.TokenHash)
+	if err != nil {
 		s.internal(w, r, err)
 		return
+	}
+	// Сессия проверяется при подключении к потоку, а не в его цикле,
+	// поэтому отозванная продолжала бы получать конверты до обрыва
+	// соединения. Отзыв доступа закрывает поток сам — тем же способом,
+	// что и удаление устройства (ADR-058).
+	for _, device := range revoked {
+		s.hub.Close(device)
 	}
 	noContent(w)
 }

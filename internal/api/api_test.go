@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,9 +21,11 @@ import (
 const origin = "https://bare.test"
 
 // env — сервер на временной базе плюс журнал, в который он пишет.
+// Обработчик хранится своим типом: тестам нужен не только ServeHTTP,
+// но и остановка — Close и CloseStreams.
 type env struct {
 	t   *testing.T
-	h   http.Handler
+	h   *api.Handler
 	st  *store.Store
 	log *syncLog
 	srv *httptest.Server
@@ -141,6 +144,33 @@ func with(c *http.Cookie) func(*http.Request) {
 
 func withDevice(id string) func(*http.Request) {
 	return func(r *http.Request) { r.Header.Set("X-Device", id) }
+}
+
+// withRemote — адрес, с которого пришло соединение. От него зависят лимиты
+// на IP (ADR-021); httptest ставит всем один и тот же.
+func withRemote(addr string) func(*http.Request) {
+	return func(r *http.Request) { r.RemoteAddr = addr }
+}
+
+// withRealIP — заголовок, который ставит nginx. Читается, только если
+// соединение пришло с loopback (ADR-055).
+func withRealIP(ip string) func(*http.Request) {
+	return func(r *http.Request) { r.Header.Set("X-Real-IP", ip) }
+}
+
+// retryAfterOf — Retry-After ответа: целые секунды, не меньше одной
+// (docs/protocol.md, «Общие правила»).
+func retryAfterOf(t *testing.T, rec *httptest.ResponseRecorder) int {
+	t.Helper()
+	raw := rec.Header().Get("Retry-After")
+	seconds, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("Retry-After: получено %q, ожидались целые секунды", raw)
+	}
+	if seconds < 1 {
+		t.Errorf("Retry-After: получено %d, ожидалось не меньше 1", seconds)
+	}
+	return seconds
 }
 
 func withOrigin(value string) func(*http.Request) {

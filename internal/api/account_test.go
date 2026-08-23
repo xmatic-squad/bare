@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -41,12 +42,21 @@ func account(nick string) map[string]any {
 	}
 }
 
-// signUp регистрирует аккаунт и отдаёт cookie сессии.
+// signUp регистрирует аккаунт и отдаёт cookie сессии. Каждый ник приходит
+// со своего адреса: регистрация ограничена пятью в час на IP (ADR-021),
+// и общий адрес упирался бы в лимит на шестом аккаунте теста.
 func (e *env) signUp(nick string) *http.Cookie {
 	e.t.Helper()
-	rec := e.do(http.MethodPost, "/api/register", account(nick))
+	rec := e.do(http.MethodPost, "/api/register", account(nick), fromNick(nick))
 	expect(e.t, rec, http.StatusCreated, "")
 	return e.cookie(rec)
+}
+
+// fromNick — свой адрес соединения на каждый ник, лишь бы разный
+// и не loopback.
+func fromNick(nick string) func(*http.Request) {
+	sum := sha256.Sum256([]byte(nick))
+	return withRemote(fmt.Sprintf("198.51.%d.%d:41000", sum[0], sum[1]))
 }
 
 func (e *env) cookie(rec *httptest.ResponseRecorder) *http.Cookie {

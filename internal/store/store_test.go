@@ -105,10 +105,22 @@ func TestUsersAndSessions(t *testing.T) {
 		t.Errorf("истёкшая сессия: получено %v, ожидалось ErrNotFound", err)
 	}
 
-	// Смена пароля с logoutOthers: остаётся только текущая сессия.
+	// Смена пароля с logoutOthers: остаётся только текущая сессия, а
+	// устройства завершённых сессий отдаются обработчику — он закроет
+	// их потоки событий (ADR-058).
+	if _, err := s.RegisterDevice(ctx, "device-live", "marta", live, now); err != nil {
+		t.Fatalf("RegisterDevice: %v", err)
+	}
+	if _, err := s.RegisterDevice(ctx, "device-other", "marta", other, now); err != nil {
+		t.Fatalf("RegisterDevice: %v", err)
+	}
 	cred := Credential{Hash: []byte("new"), Salt: []byte("salt2"), Params: "argon2id,m=19456,t=2,p=1"}
-	if err := s.SetPassword(ctx, "marta", cred, `{"v":1,"new":true}`, true, live); err != nil {
+	revoked, err := s.SetPassword(ctx, "marta", cred, `{"v":1,"new":true}`, true, live)
+	if err != nil {
 		t.Fatalf("SetPassword: %v", err)
+	}
+	if len(revoked) != 1 || revoked[0] != "device-other" {
+		t.Errorf("устройства завершённых сессий: получено %v, ожидалось [device-other]", revoked)
 	}
 	if _, err := s.Session(ctx, other, now); !errors.Is(err, ErrNotFound) {
 		t.Errorf("чужая сессия после logoutOthers: получено %v, ожидалось ErrNotFound", err)

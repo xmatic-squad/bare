@@ -3,10 +3,10 @@
 // они не ходят — пишет в базу только этот модуль.
 //
 // Правила — docs/protocol.md («События», «Сообщения», «Комнаты»)
-// и docs/storage.md: ACK уходит только после успешной записи в IndexedDB,
-// исходящее живёт в pending до 202 и держится за свой ULID, пока время
-// в нём годится серверу; отвергнутый по часам переиспользованный id
-// меняется на свежий один раз (ADR-036).
+// и docs/storage.md: ACK уходит пачкой и только после успешной записи
+// в IndexedDB (ADR-063), исходящее живёт в pending до 202 и держится
+// за свой ULID, пока время в нём годится серверу; отвергнутый по часам
+// переиспользованный id меняется на свежий один раз (ADR-036).
 //
 // Доверие к ключам — TOFU (ADR-016): каждый публичный ключ, пришедший
 // от сервера, сверяется с запомненным; изменившийся ложится в pending
@@ -38,6 +38,11 @@ import { ulid, ulidTime, validUlid } from "./ulid.js";
 // не упрётся в предел. Живой ready сбрасывает её обратно.
 const RETRY_MIN = 1000;
 const RETRY_MAX = 30000;
+
+// Пауза перед отправкой подтверждений: идентификаторы копятся и уходят
+// одним POST /api/ack, не чаще раза в две секунды (ADR-063). Подтверждение
+// — учёт очереди сервера, а не доставка человеку: сообщение уже на экране.
+const ACK_DELAY = 2000;
 
 // Владение потоком одно на браузерный профиль: устройство у вкладок общее,
 // а соединение на устройство сервер держит одно (ADR-035).
@@ -88,6 +93,10 @@ const state = {
   // Отложенный разбор конвертов, которые сейчас не разобрать.
   inboxTimer: null,
   hold: RETRY_MIN,
+  // Записанное в базу и ещё не подтверждённое серверу. Множество:
+  // конверт, выданный очередью повторно, подтверждается один раз (ADR-063).
+  acks: new Set(),
+  ackTimer: null,
 };
 
 // --- события для экранов -----------------------------------------------
@@ -320,6 +329,10 @@ export function stop() {
     clearTimeout(state.inboxTimer);
     state.inboxTimer = null;
   }
+  if (state.ackTimer !== null) {
+    clearTimeout(state.ackTimer);
+    state.ackTimer = null;
+  }
   if (state.close) {
     state.close();
     state.close = null;
@@ -338,6 +351,9 @@ export function stop() {
   state.owed.clear();
   state.pending.clear();
   state.inbox.length = 0;
+  // Неподтверждённое не досылается: сервер выдаст эти конверты очередью
+  // при следующем подключении (ADR-063).
+  state.acks.clear();
   state.wait = RETRY_MIN;
   state.hold = RETRY_MIN;
   setOnline(false);
@@ -393,6 +409,25 @@ async function ensureDevice() {
   throw new Error("не удалось завести устройство");
 }
 
+// rebindDevice привязывает сессию к устройству заново. Сессия заводится
+// без устройства (docs/storage.md, sessions.device_id), а привязывает её
+// POST /api/devices. Смена пароля входит заново (ADR-031) — без этого
+// новая сессия остаётся ничьей: «это устройство» в настройках не сходится,
+// а DELETE /api/devices/{id} такую сессию не завершает, хотя обещает
+// (docs/protocol.md, «Устройства»).
+//
+// Отказ ничего не ломает: привязку чинит ближайшее переподключение.
+export async function rebindDevice() {
+  if (!state.running || state.device === null) {
+    return;
+  }
+  try {
+    await api.registerDevice(state.device);
+  } catch {
+    // Починится при следующем connect.
+  }
+}
+
 // --- поток событий ------------------------------------------------------
 
 async function connect() {
@@ -407,6 +442,15 @@ async function connect() {
     if (err instanceof NetworkError) {
       // Запрос не дошёл — это и есть «нет соединения» (ADR-028).
       setOnline(false);
+    }
+    if (rateLimited(err)) {
+      // Ведро изменяющих запросов общее на пользователя (ADR-055):
+      // устройство могло не завестись из-за соседнего устройства или
+      // прежней работы этой же вкладки. Это задержка, а не отказ —
+      // без устройства нет ни потока, ни отправки, и сама вкладка
+      // не ожила бы до перезагрузки.
+      retryLater(pause(err));
+      return;
     }
     if (transient(err)) {
       retryLater();
@@ -450,6 +494,13 @@ function claimStream() {
       state.claim = null;
     }
   });
+}
+
+// owner — держит ли эта вкладка поток событий. Без BroadcastChannel или
+// navigator.locks арбитража нет вовсе, и вкладка работает как единственная
+// (ADR-035), поэтому владельцем считается и она.
+function owner() {
+  return !shared || state.release !== null;
 }
 
 // yieldStream отпускает владение: соседняя вкладка займёт поток сразу.
@@ -502,12 +553,20 @@ function openStream() {
   });
 }
 
-function retryLater() {
+// retryLater откладывает восстановление. Без аргумента пауза своя
+// и удваивается; after — пауза, которую назвал сервер (Retry-After),
+// и очередь удвоений она не двигает: отказ по частоте не значит, что
+// поток нездоров. Дольше RETRY_MAX не ждём и в этом случае.
+function retryLater(after = null) {
   if (state.timer !== null || !state.running) {
     return;
   }
-  const delay = state.wait;
-  state.wait = Math.min(delay * 2, RETRY_MAX);
+  let delay = state.wait;
+  if (after === null) {
+    state.wait = Math.min(delay * 2, RETRY_MAX);
+  } else {
+    delay = Math.min(after, RETRY_MAX);
+  }
   state.timer = setTimeout(() => {
     state.timer = null;
     recover();
@@ -625,7 +684,7 @@ async function flush() {
     state.hold = RETRY_MIN;
   }
   // ACK — только после успешной записи (docs/storage.md).
-  await ackAll(acked);
+  ackLater(acked);
 }
 
 // postpone откладывает повторный разбор: причина, по которой конверт не
@@ -752,7 +811,32 @@ async function reopen() {
   notify(messages);
 }
 
-async function ackAll(ids) {
+// ackLater копит подтверждения и отправляет их пачкой. По запросу
+// на конверт получатель оживлённой комнаты тратил общее ведро одними
+// подтверждениями и упирался в 429 на всём изменяющем — включая выход
+// из комнаты и смену пароля (ADR-063). Правило docs/storage.md остаётся
+// дословным: сюда попадает только то, что уже записано в IndexedDB.
+function ackLater(ids) {
+  for (const id of ids) {
+    state.acks.add(id);
+  }
+  if (state.acks.size === 0 || state.ackTimer !== null || !state.running) {
+    return;
+  }
+  state.ackTimer = setTimeout(() => {
+    state.ackTimer = null;
+    ackNow();
+  }, ACK_DELAY);
+}
+
+// ackNow отдаёт накопленное. Больше MAX_ACK за раз сервер не принимает,
+// поэтому длинная пачка идёт кусками.
+async function ackNow() {
+  const ids = [...state.acks];
+  state.acks.clear();
+  if (ids.length === 0 || !state.running) {
+    return;
+  }
   for (let i = 0; i < ids.length; i += api.MAX_ACK) {
     try {
       await api.ack(state.device, ids.slice(i, i + api.MAX_ACK));
@@ -798,6 +882,18 @@ async function refreshContacts() {
   if (changed) {
     announceChats();
   }
+}
+
+// resumePending повторяет неотправленное там, где это законно: повтор
+// принадлежит владельцу потока, иначе одно сообщение ушло бы дважды,
+// с разными ULID (ADR-035). Невладеющая вкладка отдаёт свой список
+// владельцу — он повторит его после ближайшего ready.
+async function resumePending() {
+  if (owner()) {
+    await retryPending();
+    return;
+  }
+  share({ kind: "pending", ids: [...state.pending] });
 }
 
 // retryPending повторяет неотправленное после подключения. Идёт прямо,
@@ -912,7 +1008,9 @@ export function trustKey(nick) {
     // Владелец, чей rekey упирался в этот ключ, доводит его до конца.
     await payRekeys();
     await reopen();
-    await retryPending();
+    // «Доверять новому ключу» нажимают в любой вкладке, а повторяет
+    // неотправленное владелец потока (ADR-035).
+    await resumePending();
     return true;
   });
 }
@@ -945,7 +1043,7 @@ function usableRoom(r) {
     && typeof r.owner === "string"
     && Array.isArray(r.members) && r.members.every((nick) => typeof nick === "string")
     && Number.isFinite(r.createdAt)
-    && (r.key === null || r.key === undefined || usableKey(r.key));
+    && Array.isArray(r.keys) && r.keys.every(usableKey);
 }
 
 function usableKey(k) {
@@ -1006,9 +1104,14 @@ async function senderKey(nick) {
   return record.pending ? null : record.publicKey;
 }
 
-// takeRoomKey разворачивает завёрнутый нам ключ комнаты и кладёт его
+// takeRoomKeys разворачивает завёрнутые нам ключи комнаты и кладёт их
 // в roomKeys вместе с from и receivedAt (docs/crypto.md, «Комната»).
 // Отдаёт, появился ли новый ключ.
+//
+// Ключей бывает несколько: `GET /api/rooms` отдаёт все, которые сервер
+// ещё держит, — участник, пропустивший rekey в офлайне, добирает отсюда
+// недостающий keyId и читает конверт, пришедший с ним (ADR-059).
+// Событие room несёт один ключ, новый.
 //
 // Уже известный keyId не трогается: клиент держит все ключи комнаты.
 // Не развернувшийся не теряется — сервер отдаёт его снова с каждым
@@ -1019,9 +1122,20 @@ async function senderKey(nick) {
 // до запроса его публичного ключа: TOFU запоминает первый ключ молча,
 // поэтому незнакомый распространитель — это подмена, а не первый
 // контакт (ADR-039).
-async function takeRoomKey(room) {
-  const wrapped = room.key;
-  if (!usableKey(wrapped) || !room.members.includes(wrapped.from)) {
+async function takeRoomKeys(room) {
+  let fresh = false;
+  // Порядок — от старого ключа к новому: текущим у нас становится
+  // последний сохранённый (ADR-042).
+  for (const wrapped of room.keys) {
+    if (await takeRoomKey(room, wrapped)) {
+      fresh = true;
+    }
+  }
+  return fresh;
+}
+
+async function takeRoomKey(room, wrapped) {
+  if (!room.members.includes(wrapped.from)) {
     return false;
   }
   if (await db.roomKey(room.id, wrapped.keyId)) {
@@ -1069,7 +1183,7 @@ async function applyRoom(room) {
     return;
   }
   const changed = await saveRoom(room);
-  const fresh = await takeRoomKey(room);
+  const fresh = await takeRoomKeys(room);
   if (changed) {
     announceChats();
   }
@@ -1115,7 +1229,7 @@ async function refreshRooms() {
     }
     seen.add(room.id);
     const moved = await saveRoom(room);
-    const key = await takeRoomKey(room);
+    const key = await takeRoomKeys(room);
     changed = changed || moved;
     fresh = fresh || key;
     if (moved || key) {
@@ -1335,7 +1449,9 @@ async function changeRoom(roomId, add, remove) {
   announceRoom(roomId);
   if (stored) {
     await reopen();
-    await retryPending();
+    // Состав меняют из любой вкладки; повтор неотправленного — дело
+    // владельца потока (ADR-035).
+    await resumePending();
   }
   return room;
 }
@@ -1567,8 +1683,9 @@ async function post(message, peer, roomId) {
 }
 
 // settle разбирает отказ. Сеть и 500 сообщение не хоронят: оно остаётся
-// pending и повторится при следующем подключении (ADR-027). Удалённое
-// устройство чинится тем же способом — переподключением. Остальные 4xx —
+// pending и повторится при следующем подключении (ADR-027). Потерянное
+// устройство — то же самое: это не отказ сообщению, и чинится он
+// переподключением, а не текстом в ленте (ADR-060). Остальные 4xx —
 // failed с текстом отказа (ADR-033).
 async function settle(message, err) {
   if (err instanceof NetworkError) {
@@ -1598,6 +1715,18 @@ function transient(err) {
   return err instanceof NetworkError
     || err instanceof Postponed
     || (err instanceof ApiError && err.status >= 500);
+}
+
+// rateLimited — 429: сервер ответил и просит подождать (ADR-055).
+// Сообщению это отказ — «слишком часто, попробуйте позже» и failed
+// (docs/storage.md), а устройству и потоку — всего лишь задержка.
+function rateLimited(err) {
+  return err instanceof ApiError && err.code === "rate_limited";
+}
+
+// pause — пауза из Retry-After в миллисекундах; заголовка не было — null.
+function pause(err) {
+  return typeof err.retryAfter === "number" ? err.retryAfter * 1000 : null;
 }
 
 // --- действия экранов ---------------------------------------------------

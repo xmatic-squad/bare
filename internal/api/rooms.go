@@ -20,8 +20,10 @@ import (
 // метаданные, как и состав.
 const maxRoomName = 64
 
-// roomOut — тип Room из docs/protocol.md. key присутствует всегда,
-// пустой — null; needsRekey — состояние комнаты, а не свойство события,
+// roomOut — тип Room из docs/protocol.md. keys присутствует всегда,
+// пустой — []; в GET /api/rooms это все удерживаемые сервером ключи
+// запрашивающего, от старого к новому, в событии room — только новый
+// (ADR-059). needsRekey — состояние комнаты, а не свойство события,
 // поэтому идёт и в списке, и в событии (ADR-041).
 type roomOut struct {
 	ID         string   `json:"id"`
@@ -29,7 +31,7 @@ type roomOut struct {
 	Owner      string   `json:"owner"`
 	Members    []string `json:"members"`
 	CreatedAt  int64    `json:"createdAt"`
-	Key        *keyOut  `json:"key"`
+	Keys       []keyOut `json:"keys"`
 	NeedsRekey bool     `json:"needsRekey"`
 }
 
@@ -49,8 +51,9 @@ type keyIn struct {
 }
 
 // GET /api/rooms — комнаты, где пользователь участник, каждая с его
-// текущим ключом и признаком needsRekey: владелец, пропустивший событие,
-// поднимает долг по ключу отсюда (ADR-041).
+// ключами и признаком needsRekey: владелец, пропустивший событие,
+// поднимает долг по ключу отсюда (ADR-041), а участник, пропустивший
+// rekey в офлайне, — недостающий ключ (ADR-059).
 func (s *server) rooms(w http.ResponseWriter, r *http.Request) {
 	sess, _ := auth.From(r)
 	list, err := s.st.Rooms(r.Context(), sess.Nick)
@@ -60,7 +63,7 @@ func (s *server) rooms(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]roomOut, 0, len(list))
 	for _, room := range list {
-		out = append(out, roomJSON(room, room.Key))
+		out = append(out, roomJSON(room, room.Keys))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -69,12 +72,6 @@ func (s *server) rooms(w http.ResponseWriter, r *http.Request) {
 // (ADR-037), ключ приходит ровно один и заворачивается создателем себе:
 // его другие устройства получают комнату вместе с ключом (ADR-018).
 func (s *server) createRoom(w http.ResponseWriter, r *http.Request) {
-	// X-Device здесь необязателен, но чужой и кривой — 403, как и везде,
-	// где устройство важно (docs/protocol.md, «Общие правила»).
-	device, ok := s.optionalDevice(w, r)
-	if !ok {
-		return
-	}
 	var in struct {
 		ID    string  `json:"id"`
 		Name  string  `json:"name"`
@@ -109,6 +106,13 @@ func (s *server) createRoom(w http.ResponseWriter, r *http.Request) {
 		keysMismatch(w)
 		return
 	}
+	// X-Device здесь необязателен, но чужой и кривой — 403, как и везде,
+	// где устройство важно (docs/protocol.md, «Общие правила»). Проверка
+	// идёт после формы тела: права — после неё (ADR-043).
+	device, ok := s.optionalDevice(w, r)
+	if !ok {
+		return
+	}
 	change, err := s.st.CreateRoom(r.Context(), store.NewRoom{
 		ID:    in.ID,
 		Name:  in.Name,
@@ -130,7 +134,7 @@ func (s *server) createRoom(w http.ResponseWriter, r *http.Request) {
 	// Комната уже записана: остальным устройствам создателя она уходит
 	// событием, отправившему — ответом на запрос.
 	s.sendRoom(r, change, device)
-	writeJSON(w, http.StatusCreated, roomJSON(change.Room, keyFor(change, sess.Nick)))
+	writeJSON(w, http.StatusCreated, roomJSON(change.Room, keysFor(change, sess.Nick)))
 }
 
 // POST /api/rooms/{id}/members — смена состава и rekey одним запросом
@@ -191,7 +195,7 @@ func (s *server) updateMembers(w http.ResponseWriter, r *http.Request) {
 	// Событие room уходит и участникам, и — как room_left — убранным;
 	// каждому участнику со своим ключом (docs/protocol.md, «Комнаты»).
 	s.sendRoom(r, change, "")
-	writeJSON(w, http.StatusOK, roomJSON(change.Room, keyFor(change, sess.Nick)))
+	writeJSON(w, http.StatusOK, roomJSON(change.Room, keysFor(change, sess.Nick)))
 }
 
 // POST /api/rooms/{id}/leave — выход из комнаты. Владение переходит
@@ -270,7 +274,7 @@ func keysMismatch(w http.ResponseWriter) {
 // «События», ADR-041).
 func (s *server) sendRoom(r *http.Request, change store.RoomChange, exclude string) {
 	for _, member := range change.Members {
-		raw, err := json.Marshal(roomJSON(change.Room, member.Key))
+		raw, err := json.Marshal(roomJSON(change.Room, keyList(member.Key)))
 		if err != nil {
 			s.report(r, err)
 			continue
@@ -302,31 +306,41 @@ func (s *server) send(devices []string, exclude string, ev hub.Event) {
 	}
 }
 
-// roomJSON собирает Room протокола: состав всегда список, ключ — null,
-// если его нет.
-func roomJSON(room store.Room, key *store.RoomKey) roomOut {
+// roomJSON собирает Room протокола: состав и ключи всегда списки,
+// пустые — [].
+func roomJSON(room store.Room, keys []store.RoomKey) roomOut {
 	out := roomOut{
 		ID:         room.ID,
 		Name:       room.Name,
 		Owner:      room.Owner,
 		Members:    room.Members,
 		CreatedAt:  room.CreatedAt,
+		Keys:       make([]keyOut, 0, len(keys)),
 		NeedsRekey: room.NeedsRekey,
 	}
 	if out.Members == nil {
 		out.Members = []string{}
 	}
-	if key != nil {
-		out.Key = &keyOut{KeyID: key.KeyID, From: key.From, IV: key.IV, CT: key.CT}
+	for _, key := range keys {
+		out.Keys = append(out.Keys, keyOut{KeyID: key.KeyID, From: key.From, IV: key.IV, CT: key.CT})
 	}
 	return out
 }
 
-// keyFor — ключ участника в итоге изменения: у каждого он свой.
-func keyFor(change store.RoomChange, nick string) *store.RoomKey {
+// keyList — ключ события: он один, новый (ADR-059). Остальные свои ключи
+// получатель уже видел, а отключённый доберёт их из GET /api/rooms.
+func keyList(key *store.RoomKey) []store.RoomKey {
+	if key == nil {
+		return nil
+	}
+	return []store.RoomKey{*key}
+}
+
+// keysFor — ключ участника в итоге изменения: у каждого он свой.
+func keysFor(change store.RoomChange, nick string) []store.RoomKey {
 	for _, member := range change.Members {
 		if member.Nick == nick {
-			return member.Key
+			return keyList(member.Key)
 		}
 	}
 	return nil

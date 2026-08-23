@@ -81,6 +81,11 @@ func serve() error {
 	}
 
 	h := api.New(cfg, st, static, os.Stdout)
+	// Отправщики пушей дописывают начатое и пишут результат в базу, поэтому
+	// остановить их надо раньше, чем закроется st. defer выстроен на это:
+	// h.Close отложен позже st.Close и выполнится раньше него.
+	defer h.Close()
+
 	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -93,7 +98,11 @@ func serve() error {
 
 	// Потоки событий не заканчиваются сами: без этого Shutdown ждал бы,
 	// пока подключённые клиенты уйдут, до самого таймаута (ADR-004).
-	srv.RegisterOnShutdown(h.Close)
+	// Здесь только закрытие потоков: колбэк крутится в своей горутине,
+	// и Shutdown его не дожидается — дождаться отправки пушей отсюда
+	// нельзя. Их останавливает h.Close, когда Shutdown уже вернулся
+	// и обработчики отработали.
+	srv.RegisterOnShutdown(h.CloseStreams)
 
 	// Сначала bind, потом сообщение: строка в журнале означает, что порт занят
 	// нами, а не то, что мы собирались его занять.
@@ -154,15 +163,29 @@ func version() {
 	fmt.Println(revision())
 }
 
+// revision — ревизия сборки. У бинаря из изменённого рабочего дерева
+// к ней дописывается «+dirty»: сверка хеша со сборкой из тега — единственное
+// смягчение против подмены клиента (docs/threat-model.md), и чистый хеш
+// коммита у бинаря с чужими правками сводил бы её на нет (ADR-057).
 func revision() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "unknown"
 	}
+	var vcs, modified string
 	for _, s := range info.Settings {
-		if s.Key == "vcs.revision" {
-			return s.Value
+		switch s.Key {
+		case "vcs.revision":
+			vcs = s.Value
+		case "vcs.modified":
+			modified = s.Value
 		}
 	}
-	return "unknown"
+	if vcs == "" {
+		return "unknown"
+	}
+	if modified == "true" {
+		return vcs + "+dirty"
+	}
+	return vcs
 }

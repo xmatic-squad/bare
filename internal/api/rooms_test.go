@@ -12,13 +12,22 @@ import (
 
 // roomBody — тип Room из docs/protocol.md, как его видит клиент.
 type roomBody struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Owner      string   `json:"owner"`
-	Members    []string `json:"members"`
-	CreatedAt  int64    `json:"createdAt"`
-	Key        *keyBody `json:"key"`
-	NeedsRekey bool     `json:"needsRekey"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Owner      string    `json:"owner"`
+	Members    []string  `json:"members"`
+	CreatedAt  int64     `json:"createdAt"`
+	Keys       []keyBody `json:"keys"`
+	NeedsRekey bool      `json:"needsRekey"`
+}
+
+// key — текущий ключ: последний в keys, они идут от старого к новому
+// (ADR-059). nil — ключей нет вовсе.
+func (r roomBody) key() *keyBody {
+	if len(r.Keys) == 0 {
+		return nil
+	}
+	return &r.Keys[len(r.Keys)-1]
 }
 
 type keyBody struct {
@@ -151,9 +160,9 @@ func TestCreateRoom(t *testing.T) {
 	if room.NeedsRekey {
 		t.Error("needsRekey в ответе на создание")
 	}
-	if room.Key == nil || room.Key.KeyID != keyID(40) || room.Key.From != "marta" ||
-		room.Key.IV != ivOf(40, 0) || room.Key.CT != ctOf(40, 0) {
-		t.Errorf("ключ: %+v", room.Key)
+	if room.key() == nil || room.key().KeyID != keyID(40) || room.key().From != "marta" ||
+		room.key().IV != ivOf(40, 0) || room.key().CT != ctOf(40, 0) {
+		t.Errorf("ключ: %+v", room.key())
 	}
 
 	// Та же комната приходит списком, с тем же ключом.
@@ -161,7 +170,7 @@ func TestCreateRoom(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("комнат: получено %d, ожидалась 1", len(list))
 	}
-	if list[0].ID != room.ID || list[0].Key == nil || list[0].Key.CT != ctOf(40, 0) {
+	if list[0].ID != room.ID || list[0].key() == nil || list[0].key().CT != ctOf(40, 0) {
 		t.Errorf("список комнат: %+v", list[0])
 	}
 
@@ -206,7 +215,7 @@ func TestCreateRoomConflict(t *testing.T) {
 		t.Errorf("занятый id присоединил к чужой комнате: %+v", got)
 	}
 	list := e.rooms(marta)
-	if len(list) != 1 || list[0].Name != "общая" || list[0].Key == nil || list[0].Key.KeyID != keyID(40) {
+	if len(list) != 1 || list[0].Name != "общая" || list[0].key() == nil || list[0].key().KeyID != keyID(40) {
 		t.Errorf("занятый id тронул существующую комнату: %+v", list)
 	}
 }
@@ -301,8 +310,8 @@ func TestMembersAdd(t *testing.T) {
 	if nicks(got.Members) != nicks(want) {
 		t.Errorf("состав: получено %v, ожидалось %v", got.Members, want)
 	}
-	if got.Key == nil || got.Key.KeyID != keyID(60) || got.Key.CT != ctOf(60, 0) {
-		t.Errorf("ключ владельца в ответе: %+v", got.Key)
+	if got.key() == nil || got.key().KeyID != keyID(60) || got.key().CT != ctOf(60, 0) {
+		t.Errorf("ключ владельца в ответе: %+v", got.key())
 	}
 
 	// Каждый видит комнату со своим ключом.
@@ -314,9 +323,9 @@ func TestMembersAdd(t *testing.T) {
 		if list[0].Owner != "marta" || nicks(list[0].Members) != nicks(want) {
 			t.Errorf("комната у %d: %+v", i, list[0])
 		}
-		if list[0].Key == nil || list[0].Key.KeyID != keyID(60) || list[0].Key.From != "marta" ||
-			list[0].Key.CT != ctOf(60, i) {
-			t.Errorf("ключ у %d: %+v", i, list[0].Key)
+		if list[0].key() == nil || list[0].key().KeyID != keyID(60) || list[0].key().From != "marta" ||
+			list[0].key().CT != ctOf(60, i) {
+			t.Errorf("ключ у %d: %+v", i, list[0].key())
 		}
 	}
 
@@ -384,8 +393,8 @@ func TestMembersKeysMismatch(t *testing.T) {
 	if len(got.Members) != 1 || got.Members[0] != "marta" {
 		t.Errorf("состав после отказов: %v", got.Members)
 	}
-	if got.Key == nil || got.Key.KeyID != keyID(40) {
-		t.Errorf("ключ после отказов: %+v", got.Key)
+	if got.key() == nil || got.key().KeyID != keyID(40) {
+		t.Errorf("ключ после отказов: %+v", got.key())
 	}
 	if list := e.rooms(kolya); len(list) != 0 {
 		t.Errorf("комната у постороннего: %+v", list)
@@ -533,8 +542,8 @@ func TestLeaveTransfersOwnership(t *testing.T) {
 		t.Errorf("состав: %v", got.Members)
 	}
 	// Ключ оставшихся никуда не делся: rekey делает клиент нового владельца.
-	if got.Key == nil || got.Key.KeyID != keyID(80) {
-		t.Errorf("ключ после выхода владельца: %+v", got.Key)
+	if got.key() == nil || got.key().KeyID != keyID(80) {
+		t.Errorf("ключ после выхода владельца: %+v", got.key())
 	}
 	// Новый владелец меняет состав, прежний — уже нет.
 	expect(t, e.changeMembers(kolya, room.ID, nil, nil, []string{"petya", "kolya"}, 100),
@@ -690,8 +699,8 @@ func TestRoomKeysKeepTwo(t *testing.T) {
 			with(marta), withDevice(m1)), http.StatusAccepted, "")
 	}
 	// Текущий ключ участника — последний.
-	if got := e.room(marta, room.ID); got.Key == nil || got.Key.KeyID != keyID(80) {
-		t.Errorf("текущий ключ: %+v", got.Key)
+	if got := e.room(marta, room.ID); got.key() == nil || got.key().KeyID != keyID(80) {
+		t.Errorf("текущий ключ: %+v", got.key())
 	}
 }
 
@@ -722,8 +731,8 @@ func TestDeleteAccountWithRooms(t *testing.T) {
 	if len(list[0].Members) != 1 || list[0].Members[0] != "petya" {
 		t.Errorf("состав: %v", list[0].Members)
 	}
-	if list[0].Key == nil || list[0].Key.KeyID != keyID(60) {
-		t.Errorf("ключ оставшегося: %+v", list[0].Key)
+	if list[0].key() == nil || list[0].key().KeyID != keyID(60) {
+		t.Errorf("ключ оставшегося: %+v", list[0].key())
 	}
 	// Ник свободен, а комната, где не осталось никого, исчезла вместе с ним.
 	expect(t, e.do(http.MethodPost, "/api/register", account("marta")), http.StatusCreated, "")
@@ -759,8 +768,8 @@ func TestRoomEventOnCreate(t *testing.T) {
 	if got.ID != room.ID || got.Name != "общая" || got.Owner != "marta" {
 		t.Errorf("комната в событии: %+v", got)
 	}
-	if got.Key == nil || got.Key.CT != ctOf(40, 0) {
-		t.Errorf("ключ в событии: %+v", got.Key)
+	if got.key() == nil || got.key().CT != ctOf(40, 0) {
+		t.Errorf("ключ в событии: %+v", got.key())
 	}
 	if got.NeedsRekey {
 		t.Error("needsRekey при создании")
@@ -808,8 +817,8 @@ func TestRoomEventsOnMembers(t *testing.T) {
 		if nicks(got.Members) != "marta,petya" {
 			t.Errorf("состав в событии у %s: %v", nick, got.Members)
 		}
-		if got.Key == nil || got.Key.KeyID != keyID(80) || got.Key.CT != ctOf(80, i) {
-			t.Errorf("ключ в событии у %s: %+v", nick, got.Key)
+		if got.key() == nil || got.key().KeyID != keyID(80) || got.key().CT != ctOf(80, i) {
+			t.Errorf("ключ в событии у %s: %+v", nick, got.key())
 		}
 		if got.NeedsRekey {
 			t.Errorf("needsRekey при смене состава у %s", nick)
@@ -853,8 +862,8 @@ func TestRoomEventOnLeave(t *testing.T) {
 	if len(got.Members) != 1 || got.Members[0] != "marta" {
 		t.Errorf("состав в событии: %v", got.Members)
 	}
-	if got.Key == nil || got.Key.KeyID != keyID(60) {
-		t.Errorf("ключ в событии: %+v", got.Key)
+	if got.key() == nil || got.key().KeyID != keyID(60) {
+		t.Errorf("ключ в событии: %+v", got.key())
 	}
 	// Другим устройствам вышедшего — room_left: комната ушла из списка,
 	// и ждать следующего ready им незачем (ADR-041). Запрос шёл без
@@ -959,14 +968,58 @@ func TestNeedsRekeyOutlivesEvent(t *testing.T) {
 	if got == nil || !got.NeedsRekey {
 		t.Fatalf("needsRekey в списке комнат: %+v", got)
 	}
-	if got.Key == nil || got.Key.KeyID != keyID(60) {
-		t.Errorf("ключ в списке: %+v", got.Key)
+	if got.key() == nil || got.key().KeyID != keyID(60) {
+		t.Errorf("ключ в списке: %+v", got.key())
 	}
 
 	// Rekey закрывает долг.
 	expect(t, e.changeMembers(marta, room.ID, nil, nil, []string{"marta"}, 80), http.StatusOK, "")
 	if got := e.room(marta, room.ID); got.NeedsRekey {
 		t.Error("needsRekey после rekey")
+	}
+}
+
+// Участник, пропустивший два rekey в офлайне, получает оба удерживаемых
+// ключа: без прежнего он не прочитал бы конверт, который лежит в его
+// очереди с промежуточным keyId (ADR-059).
+func TestRoomKeysCoverMissedRekey(t *testing.T) {
+	e := newEnv(t)
+	marta, m1 := e.join("marta", 1)
+	petya, p1 := e.join("petya", 2)
+	e.join("kolya", 3)
+
+	room := e.makeRoom(marta, "marta", "общая", 40)
+	// Первый rekey: пришёл kolya. Устройство petya офлайн — событие room
+	// в очередь не кладётся, и ключ до него не доехал.
+	expect(t, e.changeMembers(marta, room.ID, []string{"petya", "kolya"}, nil,
+		[]string{"marta", "petya", "kolya"}, 60), http.StatusOK, "")
+
+	id := ulid(nowMillis(), 5)
+	expect(t, e.do(http.MethodPost, "/api/messages", roomMessage(id, room.ID, keyID(60)),
+		with(marta), withDevice(m1)), http.StatusAccepted, "")
+
+	// Второй rekey: kolya ушёл. Текущим стал третий ключ.
+	expect(t, e.changeMembers(marta, room.ID, nil, []string{"kolya"}, []string{"marta", "petya"}, 80),
+		http.StatusOK, "")
+
+	queued := e.envelopes(p1)
+	if len(queued) != 1 || queued[0].KeyID != keyID(60) {
+		t.Fatalf("очередь petya: %+v", queued)
+	}
+
+	got := e.room(petya, room.ID)
+	if got == nil || len(got.Keys) != 2 {
+		t.Fatalf("ключи petya: %+v", got)
+	}
+	if got.Keys[0].KeyID != keyID(60) || got.Keys[0].CT != ctOf(60, 1) {
+		t.Errorf("пропущенный ключ: %+v", got.Keys[0])
+	}
+	if got.Keys[1].KeyID != keyID(80) || got.Keys[1].CT != ctOf(80, 1) {
+		t.Errorf("текущий ключ: %+v", got.Keys[1])
+	}
+	// Ключ конверта из очереди теперь у него есть.
+	if got.Keys[0].KeyID != queued[0].KeyID {
+		t.Errorf("ключа конверта нет среди выданных: %+v", got.Keys)
 	}
 }
 
@@ -1012,8 +1065,8 @@ func TestDeleteAccountLeavesRooms(t *testing.T) {
 		}
 		// Каждому — его собственный ключ: он различается порядковым
 		// номером внутри «шифротекста».
-		if got.Key == nil || got.Key.CT != ctOf(60, i+1) {
-			t.Errorf("ключ в событии: %+v", got.Key)
+		if got.key() == nil || got.key().CT != ctOf(60, i+1) {
+			t.Errorf("ключ в событии: %+v", got.key())
 		}
 	}
 
@@ -1042,7 +1095,7 @@ func TestMembersDuplicateKeyTarget(t *testing.T) {
 	rec := e.changeMembers(marta, room.ID, nil, nil, []string{"marta", "marta"}, 80)
 	expect(t, rec, http.StatusBadRequest, "keys_mismatch")
 	// Отказ ничего не изменил: ключ комнаты прежний.
-	if got := e.room(marta, room.ID); got.Key == nil || got.Key.KeyID != keyID(60) {
-		t.Errorf("ключ после keys_mismatch: %+v", got.Key)
+	if got := e.room(marta, room.ID); got.key() == nil || got.key().KeyID != keyID(60) {
+		t.Errorf("ключ после keys_mismatch: %+v", got.key())
 	}
 }

@@ -410,6 +410,10 @@ async function changePassword(current, next, logoutOthers) {
   } finally {
     wipe(secret);
   }
+  // Вход завёл новую сессию, а сессия заводится без устройства: привязку
+  // делает POST /api/devices. Без неё удаление этого устройства с другого
+  // не завершит здешнюю сессию (docs/protocol.md, «Устройства»).
+  await sync.rebindDevice();
 }
 
 // deleteAccount входит заново тем же порядком, что и смена пароля: сессии

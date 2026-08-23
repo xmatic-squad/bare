@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/xmatic-squad/bare/internal/auth"
@@ -55,10 +54,6 @@ type messageIn struct {
 // он проверяет форму и раскладывает конверт по очередям (ADR-008).
 // Порядок проверок — docs/protocol.md, «Сообщения».
 func (s *server) sendMessage(w http.ResponseWriter, r *http.Request) {
-	device, ok := s.device(w, r)
-	if !ok {
-		return
-	}
 	var in messageIn
 	if !decode(w, r, &in) {
 		return
@@ -72,6 +67,14 @@ func (s *server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	if d := now.Sub(time.UnixMilli(ms)); d > clockSkew || d < -clockSkew {
 		Error(w, http.StatusBadRequest, "clock_skew",
 			"проверьте часы на устройстве: расхождение больше 5 минут")
+		return
+	}
+
+	// Принадлежность устройства — право, а не форма, поэтому проверяется
+	// после разбора тела: кривое тело отвечает bad_json и invalid даже
+	// с чужим X-Device (ADR-043).
+	device, ok := s.device(w, r)
+	if !ok {
 		return
 	}
 
@@ -220,10 +223,6 @@ func checkForm(w http.ResponseWriter, in messageIn) (int64, bool) {
 // POST /api/ack — клиент записал сообщения в IndexedDB: из очереди
 // устройства их можно убрать (ADR-008).
 func (s *server) ack(w http.ResponseWriter, r *http.Request) {
-	device, ok := s.device(w, r)
-	if !ok {
-		return
-	}
 	var in struct {
 		IDs []string `json:"ids"`
 	}
@@ -234,15 +233,14 @@ func (s *server) ack(w http.ResponseWriter, r *http.Request) {
 		Invalid(w, "ids", "не больше 500 идентификаторов")
 		return
 	}
+	// Устройство — право: после формы тела (ADR-043).
+	device, ok := s.device(w, r)
+	if !ok {
+		return
+	}
 	if err := s.st.Ack(r.Context(), device, in.IDs); err != nil {
 		s.internal(w, r, err)
 		return
 	}
 	noContent(w)
-}
-
-// rateLimited — 429 с Retry-After в секундах (ADR-021).
-func (s *server) rateLimited(w http.ResponseWriter, wait time.Duration) {
-	w.Header().Set("Retry-After", strconv.Itoa(retryAfter(wait)))
-	Error(w, http.StatusTooManyRequests, "rate_limited", "слишком часто, попробуйте позже")
 }

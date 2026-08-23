@@ -80,28 +80,65 @@ func (s *Store) SetAuth(ctx context.Context, nick string, cred Credential) error
 // разъехавшиеся хеш и блоб означали бы аккаунт, в который нельзя войти
 // или ключ которого не расшифровать. При logoutOthers в той же транзакции
 // удаляются все сессии пользователя, кроме keep — текущей.
-func (s *Store) SetPassword(ctx context.Context, nick string, cred Credential, blob string, logoutOthers bool, keep []byte) error {
+//
+// Первое значение — устройства, к которым были привязаны удалённые сессии:
+// их потоки событий закрывает обработчик. Поток проверяет сессию только
+// при подключении, поэтому отозванная иначе продолжала бы получать
+// конверты до обрыва соединения (ADR-058).
+func (s *Store) SetPassword(ctx context.Context, nick string, cred Credential, blob string, logoutOthers bool, keep []byte) ([]string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("store: смена пароля: %w", err)
+		return nil, fmt.Errorf("store: смена пароля: %w", err)
 	}
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE users SET auth_hash = ?, auth_salt = ?, auth_params = ?, key_blob = ? WHERE nick = ?`,
 		cred.Hash, cred.Salt, cred.Params, blob, nick); err != nil {
-		return fmt.Errorf("store: смена пароля: %w", err)
+		return nil, fmt.Errorf("store: смена пароля: %w", err)
 	}
+	var revoked []string
 	if logoutOthers {
+		revoked, err = revokedDevices(ctx, tx, nick, keep)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM sessions WHERE nick = ? AND token_hash <> ?`, nick, keep); err != nil {
-			return fmt.Errorf("store: смена пароля: %w", err)
+			return nil, fmt.Errorf("store: смена пароля: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: смена пароля: %w", err)
+		return nil, fmt.Errorf("store: смена пароля: %w", err)
 	}
-	return nil
+	return revoked, nil
+}
+
+// revokedDevices — устройства завершаемых сессий, кроме устройства текущей:
+// её оставляют, и закрывать её поток незачем.
+func revokedDevices(ctx context.Context, tx *sql.Tx, nick string, keep []byte) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT DISTINCT device_id FROM sessions
+		WHERE nick = ? AND token_hash <> ? AND device_id IS NOT NULL
+		  AND device_id NOT IN (SELECT device_id FROM sessions WHERE token_hash = ? AND device_id IS NOT NULL)
+		ORDER BY device_id`, nick, keep, keep)
+	if err != nil {
+		return nil, fmt.Errorf("store: устройства завершённых сессий: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: устройства завершённых сессий: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: устройства завершённых сессий: %w", err)
+	}
+	return out, nil
 }
 
 // DeleteUser удаляет пользователя; устройства, сессии, контакты, членство,

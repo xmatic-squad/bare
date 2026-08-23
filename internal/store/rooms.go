@@ -49,16 +49,18 @@ type WrappedKey struct {
 	CT string
 }
 
-// Room — комната и её состав. Key — текущий ключ того, кто спрашивает;
-// nil означает, что ключа у него нет. NeedsRekey — состав уменьшился,
-// а нового ключа ещё не было (ADR-041).
+// Room — комната и её состав. Keys — завёрнутые ключи того, кто
+// спрашивает, от старого к новому: сервер держит два последних keyId
+// (ADR-018) и отдаёт участнику все, иначе пропущенный в офлайне ключ
+// не добыть ничем (ADR-059). Пусто — ключей у него нет. NeedsRekey —
+// состав уменьшился, а нового ключа ещё не было (ADR-041).
 type Room struct {
 	ID         string
 	Name       string
 	Owner      string
 	Members    []string // по joined_at
 	CreatedAt  int64
-	Key        *RoomKey
+	Keys       []RoomKey
 	NeedsRekey bool
 }
 
@@ -71,15 +73,17 @@ type Recipient struct {
 }
 
 // RoomChange — итог изменения комнаты: кому уходит room, а кому room_left.
-// Room.Key всегда nil — ключ у каждого получателя свой, он в Recipient.
+// Room.Keys всегда пусты — ключ у каждого получателя свой, он в Recipient.
 type RoomChange struct {
 	Room    Room
 	Members []Recipient // итоговый состав
 	Left    []Recipient // выбывшие
 }
 
-// Rooms — комнаты, где пользователь участник, каждая с его текущим
-// ключом (docs/protocol.md, «Комнаты»).
+// Rooms — комнаты, где пользователь участник, каждая со всеми его
+// завёрнутыми ключами: сервер держит два последних keyId, и участник,
+// пропустивший rekey в офлайне, добирает пропущенный отсюда
+// (ADR-059, docs/protocol.md, «Комнаты»).
 func (s *Store) Rooms(ctx context.Context, nick string) ([]Room, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT r.id, r.name, r.owner, r.created_at, r.needs_rekey
@@ -130,22 +134,25 @@ func (s *Store) Rooms(ctx context.Context, nick string) ([]Room, error) {
 		return nil, fmt.Errorf("store: состав комнат: %w", err)
 	}
 
-	keys, err := s.db.QueryContext(ctx, currentKeysQuery+` AND nick = ?`, nick)
+	// Порядок — от старого ключа к новому, тот же, что у обрезки
+	// и у «текущего» (ADR-042): последний в списке и есть текущий.
+	keys, err := s.db.QueryContext(ctx, `
+		SELECT room_id, key_id, sender, iv, ct FROM room_keys
+		WHERE nick = ? AND room_id IN (SELECT room_id FROM room_members WHERE nick = ?)
+		ORDER BY room_id, created_at, key_id`, nick, nick)
 	if err != nil {
 		return nil, fmt.Errorf("store: ключи комнат: %w", err)
 	}
 	defer keys.Close()
 
 	for keys.Next() {
-		// Второй столбец — ник владельца ключа, здесь он всегда nick.
-		var room, member string
+		var room string
 		var k RoomKey
-		if err := keys.Scan(&room, &member, &k.KeyID, &k.From, &k.IV, &k.CT); err != nil {
+		if err := keys.Scan(&room, &k.KeyID, &k.From, &k.IV, &k.CT); err != nil {
 			return nil, fmt.Errorf("store: ключи комнат: %w", err)
 		}
 		if i, ok := at[room]; ok {
-			key := k
-			out[i].Key = &key
+			out[i].Keys = append(out[i].Keys, k)
 		}
 	}
 	if err := keys.Err(); err != nil {

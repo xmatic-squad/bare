@@ -7,13 +7,15 @@
 export const MAX_ACK = 500;
 
 // ApiError — ответ сервера с кодом из перечня docs/protocol.md.
+// retryAfter — сколько секунд просит ждать 429; у остальных ответов null.
 export class ApiError extends Error {
-  constructor(code, message, status, field) {
+  constructor(code, message, status, field, retryAfter = null) {
     super(message || code);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
     this.field = field;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -96,7 +98,19 @@ async function request(method, path, body, { quiet = false, device = null } = {}
   if (code === "unauthenticated" && !quiet) {
     expired();
   }
-  throw new ApiError(code, data?.message, response.status, data?.field);
+  throw new ApiError(code, data?.message, response.status, data?.field, retryAfter(response));
+}
+
+// retryAfter — сколько сервер просит ждать: целые секунды, не меньше одной
+// (docs/protocol.md, «Общие правила»). Заголовка нет или он не число —
+// null: паузу выбирает клиент.
+function retryAfter(response) {
+  const raw = response.headers.get("Retry-After");
+  if (raw === null) {
+    return null;
+  }
+  const seconds = Number(raw);
+  return Number.isInteger(seconds) && seconds > 0 ? seconds : null;
 }
 
 export function config() {
@@ -194,8 +208,9 @@ export function removeContact(nick) {
 
 // --- комнаты -----------------------------------------------------------
 
-// rooms — комнаты, где мы участники, каждая с нашим текущим завёрнутым
-// ключом (docs/protocol.md, «Комнаты»).
+// rooms — комнаты, где мы участники, каждая с нашими завёрнутыми ключами:
+// сервер отдаёт все, которые ещё держит, от старого к новому (ADR-059,
+// docs/protocol.md, «Комнаты»).
 export function rooms() {
   return request("GET", "/api/rooms");
 }

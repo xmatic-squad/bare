@@ -88,12 +88,21 @@ func TestCreateRoomTakenID(t *testing.T) {
 		t.Fatalf("Rooms: %v", err)
 	}
 	if len(rooms) != 1 || rooms[0].Name != "общая" || rooms[0].Owner != "marta" ||
-		rooms[0].Key == nil || rooms[0].Key.KeyID != "k1" {
+		current(rooms[0]) == nil || current(rooms[0]).KeyID != "k1" {
 		t.Errorf("комната после отказа: %+v", rooms)
 	}
 	if got, err := s.Rooms(ctx, "petya"); err != nil || len(got) != 0 {
 		t.Errorf("занятый id присоединил чужого: %+v, %v", got, err)
 	}
+}
+
+// current — текущий ключ участника: последний в Keys, они идут от старого
+// к новому (ADR-059).
+func current(r Room) *RoomKey {
+	if len(r.Keys) == 0 {
+		return nil
+	}
+	return &r.Keys[len(r.Keys)-1]
 }
 
 // У комнаты живут два последних keyId; обрезка при rekey и фоновая чистка
@@ -120,12 +129,30 @@ func TestRoomKeysTrimmedToTwo(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Rooms %s: %v", nick, err)
 		}
-		if len(rooms) != 1 || rooms[0].Key == nil {
+		if len(rooms) != 1 || current(rooms[0]) == nil {
 			t.Fatalf("комнаты %s: %+v", nick, rooms)
 		}
-		if rooms[0].Key.KeyID != "k3" || rooms[0].Key.CT != "ct-"+nick {
-			t.Errorf("ключ %s: %+v", nick, rooms[0].Key)
+		if current(rooms[0]).KeyID != "k3" || current(rooms[0]).CT != "ct-"+nick {
+			t.Errorf("ключ %s: %+v", nick, current(rooms[0]))
 		}
+	}
+	// Участнику отдаются оба удерживаемых ключа, от старого к новому:
+	// без прежнего он не прочитает сообщение, отправленное до последнего
+	// rekey, пока его не было (ADR-059).
+	rooms, err := s.Rooms(ctx, "petya")
+	if err != nil {
+		t.Fatalf("Rooms petya: %v", err)
+	}
+	if len(rooms) != 1 || len(rooms[0].Keys) != 2 {
+		t.Fatalf("ключи petya: %+v", rooms)
+	}
+	if rooms[0].Keys[0].KeyID != "k2" || rooms[0].Keys[1].KeyID != "k3" {
+		t.Errorf("порядок ключей: получено %v, ожидалось [k2 k3]",
+			[]string{rooms[0].Keys[0].KeyID, rooms[0].Keys[1].KeyID})
+	}
+	// Ключей чужой комнаты в ответе нет.
+	if got, err := s.Rooms(ctx, "marta"); err != nil || len(got) != 1 || len(got[0].Keys) != 2 {
+		t.Errorf("ключи marta: %+v, %v", got, err)
 	}
 }
 
@@ -147,11 +174,11 @@ func TestRoomKeysWithinOneMillisecond(t *testing.T) {
 	}
 	for _, nick := range []string{"marta", "petya"} {
 		rooms, err := s.Rooms(ctx, nick)
-		if err != nil || len(rooms) != 1 || rooms[0].Key == nil {
+		if err != nil || len(rooms) != 1 || current(rooms[0]) == nil {
 			t.Fatalf("комнаты %s: %+v, %v", nick, rooms, err)
 		}
-		if rooms[0].Key.KeyID != "aaa" {
-			t.Errorf("текущий ключ %s: получено %q, ожидалось \"aaa\"", nick, rooms[0].Key.KeyID)
+		if current(rooms[0]).KeyID != "aaa" {
+			t.Errorf("текущий ключ %s: получено %q, ожидалось \"aaa\"", nick, current(rooms[0]).KeyID)
 		}
 	}
 	// Свежим ключом можно писать: он остался ключом комнаты.

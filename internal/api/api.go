@@ -36,8 +36,12 @@ type server struct {
 	st   *store.Store
 	hub  *hub.Hub
 	push *push.Sender
-	msgs *buckets
-	logw io.Writer
+	// Лимиты ADR-021: у каждого правила своё ведро и свой ключ.
+	regs   *buckets // регистрация — по адресу
+	logins *buckets // вход — по паре адрес+ник
+	msgs   *buckets // сообщения — по нику
+	writes *buckets // остальные изменяющие запросы — по нику
+	logw   io.Writer
 }
 
 // Handler — обработчик всех маршрутов, живые SSE-потоки и очередь пушей
@@ -48,11 +52,18 @@ type Handler struct {
 	push *push.Sender
 }
 
-// Close закрывает открытые потоки событий и останавливает отправку
-// пушей. Без него остановка сервера ждала бы, пока клиенты уйдут сами:
-// у потока нет конца (ADR-004).
-func (h *Handler) Close() {
+// CloseStreams закрывает открытые потоки событий. Без этого остановка
+// сервера ждала бы, пока клиенты уйдут сами: у потока нет конца (ADR-004).
+// Ничего не ждёт сама и потому годится в http.Server.RegisterOnShutdown.
+func (h *Handler) CloseStreams() {
 	h.hub.CloseAll()
+}
+
+// Close останавливает всё, что живёт за обработчиком: потоки событий
+// и отправку пушей, — и дожидается начатых отправок. Отправщики пишут
+// в базу, поэтому Close обязан случиться до её закрытия.
+func (h *Handler) Close() {
+	h.CloseStreams()
 	h.push.Close()
 }
 
@@ -64,16 +75,23 @@ func New(cfg *config.Config, st *store.Store, static http.Handler, logw io.Write
 	// на него, а не при постановке в очередь (ADR-023).
 	live := hub.New()
 	s := &server{
-		cfg:  cfg,
-		st:   st,
-		hub:  live,
-		push: push.New(cfg, st, live.Connected, logw),
-		msgs: newBuckets(messagesPerMinute, messagesBurst),
-		logw: logw,
+		cfg:    cfg,
+		st:     st,
+		hub:    live,
+		push:   push.New(cfg, st, live.Connected, logw),
+		regs:   newBuckets(registerRule),
+		logins: newBuckets(loginRule),
+		msgs:   newBuckets(messagesRule),
+		writes: newBuckets(writesRule),
+		logw:   logw,
 	}
 	fail := auth.Fail{Error: Error, Internal: s.internal}
 	// Сессия проверяется на всех непубличных маршрутах (docs/protocol.md).
 	private := auth.Require(st, fail)
+	// write — сессия плюс общий лимит изменяющих запросов (ADR-021).
+	// Под него идут все непубличные маршруты кроме чтений и отправки
+	// сообщений: у сообщений своё правило.
+	write := func(h http.HandlerFunc) http.Handler { return private(s.limitWrites(h)) }
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
@@ -84,30 +102,33 @@ func New(cfg *config.Config, st *store.Store, static http.Handler, logw io.Write
 	mux.HandleFunc("POST /api/login", s.login)
 
 	mux.Handle("GET /api/me", private(http.HandlerFunc(s.me)))
-	mux.Handle("DELETE /api/me", private(http.HandlerFunc(s.deleteMe)))
-	mux.Handle("POST /api/logout", private(http.HandlerFunc(s.logout)))
-	mux.Handle("POST /api/password", private(http.HandlerFunc(s.password)))
+	mux.Handle("DELETE /api/me", write(s.deleteMe))
+	mux.Handle("POST /api/logout", write(s.logout))
+	mux.Handle("POST /api/password", write(s.password))
 	mux.Handle("GET /api/users/{nick}", private(http.HandlerFunc(s.user)))
 
-	mux.Handle("POST /api/devices", private(http.HandlerFunc(s.createDevice)))
+	mux.Handle("POST /api/devices", write(s.createDevice))
 	mux.Handle("GET /api/devices", private(http.HandlerFunc(s.devices)))
-	mux.Handle("DELETE /api/devices/{id}", private(http.HandlerFunc(s.deleteDevice)))
-	mux.Handle("PUT /api/devices/{id}/push", private(http.HandlerFunc(s.setPush)))
-	mux.Handle("DELETE /api/devices/{id}/push", private(http.HandlerFunc(s.deletePush)))
+	mux.Handle("DELETE /api/devices/{id}", write(s.deleteDevice))
+	mux.Handle("PUT /api/devices/{id}/push", write(s.setPush))
+	mux.Handle("DELETE /api/devices/{id}/push", write(s.deletePush))
 
 	mux.Handle("GET /api/contacts", private(http.HandlerFunc(s.contacts)))
-	mux.Handle("POST /api/contacts", private(http.HandlerFunc(s.addContact)))
-	mux.Handle("DELETE /api/contacts/{nick}", private(http.HandlerFunc(s.deleteContact)))
+	mux.Handle("POST /api/contacts", write(s.addContact))
+	mux.Handle("DELETE /api/contacts/{nick}", write(s.deleteContact))
 
 	mux.Handle("GET /api/rooms", private(http.HandlerFunc(s.rooms)))
-	mux.Handle("POST /api/rooms", private(http.HandlerFunc(s.createRoom)))
-	mux.Handle("POST /api/rooms/{id}/members", private(http.HandlerFunc(s.updateMembers)))
-	mux.Handle("POST /api/rooms/{id}/leave", private(http.HandlerFunc(s.leaveRoom)))
-	mux.Handle("DELETE /api/rooms/{id}", private(http.HandlerFunc(s.deleteRoom)))
+	mux.Handle("POST /api/rooms", write(s.createRoom))
+	mux.Handle("POST /api/rooms/{id}/members", write(s.updateMembers))
+	mux.Handle("POST /api/rooms/{id}/leave", write(s.leaveRoom))
+	mux.Handle("DELETE /api/rooms/{id}", write(s.deleteRoom))
 
 	mux.Handle("GET /api/events", private(http.HandlerFunc(s.events)))
+	// Сообщения считаются своим правилом, поэтому мимо write: лимит стоит
+	// в самом обработчике, там, где его место в порядке проверок
+	// (docs/protocol.md, «Сообщения»).
 	mux.Handle("POST /api/messages", private(http.HandlerFunc(s.sendMessage)))
-	mux.Handle("POST /api/ack", private(http.HandlerFunc(s.ack)))
+	mux.Handle("POST /api/ack", write(s.ack))
 
 	// Всё прочее под /api/ — 404, включая неподдерживаемый метод известного
 	// пути: кода 405 в протоколе нет (ADR-026). Этот маршрут заодно не даёт

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xmatic-squad/bare/internal/config"
 )
 
 // wait — сколько тест ждёт события. Всё локально, задержек быть не должно.
@@ -267,6 +269,43 @@ func TestEventsClosedOnDeviceDelete(t *testing.T) {
 
 	expect(t, e.do(http.MethodDelete, "/api/devices/"+p1, nil, with(petya)), http.StatusNoContent, "")
 	s.ended()
+}
+
+// Смена пароля с logoutOthers закрывает потоки отозванных сессий:
+// поток проверяет сессию только при подключении, и без этого отозванное
+// устройство продолжало бы получать конверты (ADR-058).
+func TestEventsClosedOnLogoutOthers(t *testing.T) {
+	e := newEnv(t)
+	first, d1 := e.join("marta", 1)
+
+	login := e.do(http.MethodPost, "/api/login", map[string]any{"nick": "marta", "authKey": bytesOf(32, 1)})
+	expect(t, login, http.StatusOK, "")
+	second := e.cookie(login)
+	d2 := e.addDevice(second, deviceOf(2))
+
+	revoked := e.open(d1, first)
+	revoked.untilReady()
+	kept := e.open(d2, second)
+	kept.untilReady()
+
+	expect(t, e.do(http.MethodPost, "/api/password", map[string]any{
+		"authKey":      bytesOf(32, 1),
+		"newAuthKey":   bytesOf(32, 9),
+		"blob":         blobOf(config.KDFIterations),
+		"logoutOthers": true,
+	}, with(second)), http.StatusNoContent, "")
+
+	revoked.ended()
+
+	// Поток той сессии, ради которой всё затевалось, остаётся живым.
+	select {
+	case ev, ok := <-kept.events:
+		if !ok {
+			t.Fatal("закрылся поток текущей сессии")
+		}
+		t.Fatalf("лишнее событие текущей сессии: %+v", ev)
+	case <-time.After(200 * time.Millisecond):
+	}
 }
 
 // Чужое устройство в query — 403 unknown_device, поток не открывается.

@@ -35,6 +35,11 @@ const state = {
   // Вопрос идёт прямо сейчас: два сообщения подряд не должны дать
   // два запроса разрешения.
   asking: false,
+  // Браузер отказал в самой подписке: приватное окно, политика,
+  // недоступный push-сервис. Кнопкой это не включить, поэтому раздел
+  // показывает «запрещены в браузере» (ADR-046). Флаг живёт во вкладке:
+  // перезагрузка пробует снова — причина могла уйти.
+  refused: false,
 };
 
 // Приглашение установки ловится с первой секунды: браузер показывает его
@@ -91,7 +96,7 @@ function supported() {
 // отклонённое разрешение, браузер без уведомлений, сервер без
 // VAPID-ключа (ADR-046).
 export async function notifications(key) {
-  if (!supported() || !key || Notification.permission === "denied") {
+  if (!supported() || !key || Notification.permission === "denied" || state.refused) {
     return "denied";
   }
   if (await turnedOff()) {
@@ -288,6 +293,11 @@ async function current() {
 // attach ставит подписку и отдаёт её серверу. Ключ сервера вплетён
 // в подписку: сменился ключ — прежняя подписка не годится, push-сервис
 // подпишет заново.
+//
+// Отказ самой подписки — не сбой сервера, а браузер, который её не даёт:
+// приватное окно, политика, недоступный push-сервис. Кнопкой это
+// не включить, поэтому false, а раздел настроек скажет «запрещены
+// в браузере» и уберёт кнопку (ADR-046).
 async function attach(key) {
   const registration = await ready();
   if (registration === null || !registration.pushManager) {
@@ -303,11 +313,17 @@ async function attach(key) {
     subscription = null;
   }
   if (subscription === null) {
-    subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: unb64url(key),
-    });
+    try {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: unb64url(key),
+      });
+    } catch {
+      state.refused = true;
+      return false;
+    }
   }
+  state.refused = false;
   await put(subscription);
   return true;
 }

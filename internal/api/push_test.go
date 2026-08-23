@@ -804,3 +804,39 @@ func TestPushPayloadPerDevice(t *testing.T) {
 	}
 	svc.silent()
 }
+
+// Остановка обработчика дожидается начатых отправок. Отправщик пишет
+// результат в базу, поэтому закрывать её раньше нельзя, а колбэк
+// http.Server.RegisterOnShutdown для этого не годится: сервер запускает
+// его в своей горутине и ничего не ждёт. Потоки событий там закрывает
+// CloseStreams, отправку останавливает Close — после Shutdown.
+func TestCloseWaitsForPush(t *testing.T) {
+	svc, release := newSlowPushService(t)
+	e := pushEnv(t)
+	marta, m1 := e.join("marta", 1)
+	petya, p1 := e.join("petya", 2)
+	e.subscribe("petya", p1, svc)
+	_ = petya
+
+	e.send(marta, m1, "petya", 5)
+	// Отправка началась и висит на медленном сервисе.
+	svc.next()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.h.Close()
+	}()
+	select {
+	case <-done:
+		t.Fatal("остановка не дождалась начатой отправки")
+	case <-time.After(quiet):
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(wait):
+		t.Fatal("остановка не закончилась после отправки")
+	}
+}

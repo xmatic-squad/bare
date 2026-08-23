@@ -1,5 +1,7 @@
 # ADR-022: Деплой — nginx, systemd, кросс-сборка
 
+Уточнён [ADR-032](032-state-permissions.md) (`StateDirectoryMode` и `UMask` в юните), [ADR-056](056-nginx-access-log-off.md) (`access_log off`) и [ADR-057](057-version-marks-dirty-tree.md) (`bare version` помечает сборку из изменённого дерева).
+
 ## Контекст
 
 Целевой сервер (`ssh xmatic`, Ubuntu 22.04) уже держит nginx на 80/443 с десятком сайтов и certbot. Go на сервере нет. HTTPS обязателен (ADR-002), но TLS в самом бинаре означал бы либо `autocert` — четвёртую зависимость, — либо конфликт за 443 с nginx.
