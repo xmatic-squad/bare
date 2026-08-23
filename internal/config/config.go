@@ -68,7 +68,45 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("%s пуст: уберите переменную, чтобы взять значение по умолчанию, или задайте непустое", v.key)
 		}
 	}
+	if err := checkVAPIDSubject(c); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// checkVAPIDSubject проверяет форму VAPID-субъекта при старте. Ошибка
+// в нём иначе не видна вовсе: сервер поднимается, подписки ставятся,
+// а push-сервис отвергает каждый токен — «пуши не приходят» без единой
+// строки о причине. Отказ на старте дешевле.
+//
+// Годится ровно то, что допускает RFC 8292: «mailto:<адрес>» или
+// «https://<хост>» (docs/deploy.md).
+func checkVAPIDSubject(c *Config) error {
+	if c.VAPIDSubject == "" {
+		// Без ключей пуши и так выключены — это рабочий локальный запуск.
+		// А вот ключи без субъекта означают, что настроить пуши хотели
+		// и не настроили.
+		if c.VAPIDPublic == "" && c.VAPIDPrivate == "" {
+			return nil
+		}
+		return fmt.Errorf("BARE_VAPID_SUBJECT пуст при заданных VAPID-ключах: нужен mailto:<адрес> или https://<хост>")
+	}
+	bad := fmt.Errorf("BARE_VAPID_SUBJECT=%q не годится: нужен mailto:<адрес> или https://<хост>", c.VAPIDSubject)
+	if addr, ok := strings.CutPrefix(c.VAPIDSubject, "mailto:"); ok {
+		local, domain, at := strings.Cut(addr, "@")
+		if !at || local == "" || domain == "" || strings.ContainsAny(addr, " \t") {
+			return bad
+		}
+		return nil
+	}
+	if rest, ok := strings.CutPrefix(c.VAPIDSubject, "https://"); ok {
+		host, _, _ := strings.Cut(rest, "/")
+		if host == "" || strings.ContainsAny(rest, " \t") {
+			return bad
+		}
+		return nil
+	}
+	return bad
 }
 
 func env(key, fallback string) string {

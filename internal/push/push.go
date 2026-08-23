@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -69,6 +70,16 @@ const (
 	dropEvery = time.Minute
 )
 
+// Чтение тела ответа push-сервиса ради кода причины (ADR-064).
+const (
+	// maxReasonBody — сколько байт тела читаем. Код причины стоит в начале
+	// ответа; остальное дочитывается в никуда, ради переиспользования
+	// соединения.
+	maxReasonBody = 200
+	// maxReason — предел длины кода причины в журнале.
+	maxReason = 64
+)
+
 // Devices — что отправителю нужно от хранилища. Правило «одно молчащее
 // устройство — один пуш» держится на атомарном захвате (ADR-023).
 type Devices interface {
@@ -110,9 +121,11 @@ type Sender struct {
 	connected func(device string) bool
 	public    string
 	private   string
-	subject   string
-	client    *http.Client
-	logw      io.Writer
+	// subject — VAPID-субъект в той форме, которую ждёт webpush-go:
+	// у «mailto:» схема снята, см. vapidSubscriber.
+	subject string
+	client  *http.Client
+	logw    io.Writer
 
 	jobs chan job
 	done chan struct{}
@@ -149,7 +162,7 @@ func New(cfg *config.Config, devices Devices, connected func(device string) bool
 		connected: connected,
 		public:    cfg.VAPIDPublic,
 		private:   cfg.VAPIDPrivate,
-		subject:   cfg.VAPIDSubject,
+		subject:   vapidSubscriber(cfg.VAPIDSubject),
 		client: &http.Client{
 			Timeout: requestTimeout,
 			// Push-сервисы редиректов не шлют. Следование за ними
@@ -178,6 +191,35 @@ func New(cfg *config.Config, devices Devices, connected func(device string) bool
 // on — есть ли чем подписывать пуши.
 func (s *Sender) on() bool {
 	return s.public != "" && s.private != "" && s.subject != ""
+}
+
+// vapidSubscriber приводит BARE_VAPID_SUBJECT к форме, которую ждёт
+// webpush-go. Нормализация здесь не косметика: без неё пуши не уходят
+// вовсе, ни на одной платформе.
+//
+// По RFC 8292 поле sub в VAPID-токене — это URI: «mailto:<адрес>» или
+// «https://<хост>». Именно так субъект и записан в окружении
+// (docs/deploy.md), и менять запись нельзя — она верна. Но webpush-go
+// в getVAPIDAuthorizationHeader считает субъектом голый адрес и сам
+// приписывает схему всему, что не начинается с «https:»:
+//
+//	if !strings.HasPrefix(subscriber, "https:") {
+//		subscriber = "mailto:" + subscriber
+//	}
+//
+// Готовый «mailto:admin@example.org» превращается в
+// «mailto:mailto:admin@example.org», и push-сервис отвергает токен:
+// APNs отвечает 403 BadJwtToken на каждый пуш. Обойти это настройкой
+// нельзя — голый адрес в sub тот же APNs тоже отвергает 403. Поэтому
+// схему снимаем ровно перед вызовом библиотеки: в токен она вернётся,
+// а конфигурация остаётся правильной по спецификации.
+//
+// «https:» отдаётся как есть: его библиотека узнаёт и не трогает.
+func vapidSubscriber(subject string) string {
+	if strings.HasPrefix(subject, "https:") {
+		return subject
+	}
+	return strings.TrimPrefix(subject, "mailto:")
 }
 
 // Send ставит пуш каждому из устройств в очередь отправки и возвращается
@@ -289,8 +331,9 @@ func (s *Sender) deliver(j job) {
 		return
 	}
 	defer resp.Body.Close()
-	// Тело ответа push-сервиса нам не нужно, но дочитать его стоит:
-	// иначе соединение не переиспользуется.
+	// Начало тела нужно ради кода причины (ADR-064), остаток дочитывается
+	// в никуда: иначе соединение не переиспользуется.
+	head, _ := io.ReadAll(io.LimitReader(resp.Body, maxReasonBody))
 	io.Copy(io.Discard, resp.Body)
 
 	switch {
@@ -305,7 +348,7 @@ func (s *Sender) deliver(j job) {
 		// Подписки больше нет — чистим мёртвую (ADR-011).
 		s.drop(j.device)
 	default:
-		s.report("push-сервис ответил %d", resp.StatusCode)
+		s.report("push-сервис ответил %s", status(resp.StatusCode, head))
 		s.release(j.device)
 	}
 }
@@ -386,6 +429,59 @@ func (s *Sender) report(format string, args ...any) {
 		return
 	}
 	fmt.Fprintf(s.logw, "%s пуш: %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
+}
+
+// status — ответ push-сервиса для журнала: код и, если он разобран,
+// короткий код причины из тела (ADR-064).
+func status(code int, body []byte) string {
+	if r := serviceReason(body); r != "" {
+		return fmt.Sprintf("%d (%s)", code, r)
+	}
+	return fmt.Sprintf("%d", code)
+}
+
+// serviceReason достаёт из тела ответа короткий код причины: APNs отвечает
+// {"reason":"BadJwtToken"}, Mozilla — {"errno":…,"error":"Not Found"}.
+// Код — диагностика вендора, а не данные пользователя, и без него отказ
+// не читается: голый «403» сутки выглядел как «что-то с пушами» (ADR-064).
+//
+// Тело всё же приходит снаружи, поэтому в журнал идёт не оно, а то, что
+// прошло safeReason.
+func serviceReason(body []byte) string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) == nil {
+		for _, key := range []string{"reason", "error", "message"} {
+			var s string
+			if json.Unmarshal(fields[key], &s) == nil && s != "" {
+				return safeReason(s)
+			}
+		}
+	}
+	return safeReason(string(body))
+}
+
+// safeReason пропускает только то, что заведомо является кодом причины:
+// одна строка не длиннее maxReason из латиницы, цифр, «_», «-» и пробелов.
+// Точка, «:», «/» и «@» встречаются в адресах подписки и именах хостов,
+// поэтому строка с ними отбрасывается целиком — в журнале остаётся один
+// статус (docs/deploy.md, «Логи»).
+func safeReason(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	if s == "" || len(s) > maxReason {
+		return ""
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == ' ', r == '_', r == '-':
+		default:
+			return ""
+		}
+	}
+	return s
 }
 
 // errLocalAddress — попытка соединиться с непубличным адресом (ADR-047).
