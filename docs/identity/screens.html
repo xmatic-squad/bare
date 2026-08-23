@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bare — эталонные экраны</title>
+<style>
+  :root {
+    --bone:#F7F5F0; --ink:#1B1917; --text2:#3C3B38; --mute:#6E6D68; --stone:#A9A59D;
+    --line:#E7E3DA; --edge:#DEDCD6; --mark:#C82D40; --mark:oklch(55% 0.19 20);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:56px; background:#E9E8E3; color:var(--ink); font-family:var(--mono); }
+  h1 { font-size:32px; font-weight:400; letter-spacing:-0.03em; margin:0 0 8px; }
+  .note { font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:var(--mute); margin:0 0 32px; }
+  .row { display:flex; flex-wrap:wrap; gap:32px; align-items:flex-start; }
+  .label { display:flex; align-items:center; gap:10px; margin-bottom:10px; font-size:12px; color:var(--mute); }
+  .label b { font-weight:400; font-size:11px; background:var(--ink); color:var(--bone); padding:2px 7px; }
+  .screen { background:var(--bone); border:1px solid var(--edge); color:var(--ink); }
+  .mark { width:18px; height:18px; fill:none; stroke:var(--ink); stroke-width:7; }
+  .section { font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:var(--stone); padding:0 8px 10px; }
+  .item { font-size:13px; padding:6px 8px; color:var(--text2); display:flex; }
+  .item.active { background:var(--ink); color:var(--bone); }
+  .item .n { margin-left:auto; color:var(--mark); }
+  .divider { display:flex; align-items:center; gap:14px; font-size:11px; color:var(--stone); }
+  .divider::before, .divider::after { content:""; flex:1; height:1px; background:var(--line); }
+  .divider.new { color:var(--mark); }
+  .divider.new::before, .divider.new::after { background:var(--mark); }
+  .author { color:var(--mute); font-size:12px; padding-top:2px; }
+  .author.me { color:var(--mark); }
+  .author .t { color:var(--stone); }
+  .input { display:flex; align-items:center; gap:12px; border:1px solid var(--ink); padding:14px 16px; font-size:14px; }
+  .input .p { color:var(--mark); }
+  .input .caret { width:8px; height:17px; background:var(--ink); }
+  .input .hint { margin-left:auto; font-size:11px; color:var(--stone); }
+  .input .ph { color:var(--stone); }
+
+  /* 2a — десктоп */
+  .desktop { width:1120px; height:700px; display:grid; grid-template-columns:224px 1fr; }
+  .side { border-right:1px solid var(--line); display:flex; flex-direction:column; }
+  .brand { height:64px; display:flex; align-items:center; gap:10px; padding:0 20px; border-bottom:1px solid var(--line); font-size:15px; letter-spacing:-0.02em; }
+  .list { padding:20px; display:flex; flex-direction:column; gap:2px; }
+  .list .section + .section { padding-top:22px; }
+  .me { margin-top:auto; padding:16px 20px; border-top:1px solid var(--line); font-size:12px; color:var(--mute); display:flex; align-items:center; gap:8px; }
+  .me i { width:6px; height:6px; background:var(--ink); }
+  .main { display:flex; flex-direction:column; min-width:0; }
+  .head { height:64px; display:flex; align-items:center; gap:14px; padding:0 32px; border-bottom:1px solid var(--line); font-size:15px; }
+  .feed { flex:1; padding:28px 32px; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; }
+  .feed .divider { padding:10px 0 22px; }
+  .grid { display:grid; grid-template-columns:132px 1fr; column-gap:20px; row-gap:6px; font-size:14px; line-height:1.55; }
+  .grid .divider { grid-column:1 / -1; padding:16px 0; }
+  .compose { padding:0 32px 28px; }
+
+  /* 2b — мобильный */
+  .mobile { width:390px; height:700px; display:flex; flex-direction:column; }
+  .mobile .head { height:56px; padding:0 20px; gap:12px; font-size:14px; }
+  .mobile .mark { width:16px; height:16px; stroke-width:8; }
+  .mobile .feed { padding:20px; gap:14px; }
+  .mobile .feed .divider { padding:0; font-size:10px; }
+  .msg { display:flex; flex-direction:column; gap:4px; }
+  .msg .author { font-size:11px; }
+  .msg p { margin:0; font-size:14px; line-height:1.5; }
+  .mobile .compose { padding:0 16px 20px; }
+  .mobile .input { padding:13px 14px; min-height:44px; gap:10px; }
+  .mobile .input .caret { width:7px; height:16px; }
+</style>
+</head>
+<body>
+<h1>Bare — эталонные экраны</h1>
+<p class="note">вариант 1h «скобы» · системный mono · без баблов · только scope v1</p>
+
+<div class="row">
+  <div>
+    <div class="label"><b>2a</b> десктоп · 1120</div>
+    <div class="screen desktop">
+      <nav class="side">
+        <div class="brand"><svg class="mark" viewBox="0 0 64 64"><path d="M10 26V10h16"/><path d="M38 10h16v16"/><path d="M54 38v16H38"/><path d="M26 54H10V38"/></svg>bare</div>
+        <div class="list">
+          <div class="section">каналы</div>
+          <div class="item active">#general</div>
+          <div class="item">#dev</div>
+          <div class="item"><span>#design</span><span class="n">2</span></div>
+          <div class="item">#random</div>
+          <div class="section">личные</div>
+          <div class="item">@marta</div>
+          <div class="item">@lev</div>
+        </div>
+        <div class="me"><i></i>ты: @kir</div>
+      </nav>
+      <main class="main">
+        <div class="head">#general</div>
+        <div class="feed">
+          <div class="divider">вторник, 18 августа</div>
+          <div class="grid">
+            <div class="author">marta <span class="t">11:52</span></div>
+            <div>выкатила статику на bare.xmatic.team, кэш чистится сам</div>
+            <div></div>
+            <div>вес страницы — 14 кб. без шрифтов было бы 9, но mono того стоит</div>
+            <div class="author">lev <span class="t">11:58</span></div>
+            <div>смотрю network: один html, один css, ноль js до первого сообщения. красиво</div>
+            <div class="author me">kir <span class="t">12:03</span></div>
+            <div>это и есть план. если фича требует бандлер — фича не нужна</div>
+            <div></div>
+            <div>доки пишу прямо в readme, отдельного сайта не будет</div>
+            <div class="divider new">новые</div>
+            <div class="author">marta <span class="t">12:41</span></div>
+            <div>кто-то с hn спрашивает, где мобильное приложение</div>
+            <div class="author">lev <span class="t">12:42</span></div>
+            <div>ответил: браузер и есть приложение</div>
+          </div>
+        </div>
+        <div class="compose">
+          <div class="input"><span class="p">&gt;</span><span>сообщение в #general</span><span class="caret"></span><span class="hint">enter — отправить</span></div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div>
+    <div class="label"><b>2b</b> мобильный · 390</div>
+    <div class="screen mobile">
+      <div class="head"><svg class="mark" viewBox="0 0 64 64"><path d="M10 26V10h16"/><path d="M38 10h16v16"/><path d="M54 38v16H38"/><path d="M26 54H10V38"/></svg>#general</div>
+      <div class="feed">
+        <div class="divider">18 авг</div>
+        <div class="msg"><div class="author">marta <span class="t">11:52</span></div><p>выкатила статику на bare.xmatic.team, кэш чистится сам</p><p>вес страницы — 14 кб</p></div>
+        <div class="msg"><div class="author">lev <span class="t">11:58</span></div><p>один html, один css, ноль js до первого сообщения. красиво</p></div>
+        <div class="msg"><div class="author me">kir <span class="t">12:03</span></div><p>это и есть план. если фича требует бандлер — фича не нужна</p></div>
+        <div class="divider new">новые</div>
+        <div class="msg"><div class="author">marta <span class="t">12:41</span></div><p>кто-то с hn спрашивает, где мобильное приложение</p></div>
+        <div class="msg"><div class="author">lev <span class="t">12:42</span></div><p>ответил: браузер и есть приложение</p></div>
+      </div>
+      <div class="compose">
+        <div class="input"><span class="p">&gt;</span><span class="ph">сообщение</span><span class="caret"></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

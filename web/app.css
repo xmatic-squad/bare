@@ -1,0 +1,1002 @@
+/* айдентика «скобы» — docs/identity/brief.md, ADR-024 */
+
+:root {
+  --bone: #F7F5F0;
+  --ink: #1B1917;
+  --text2: #3C3B38;
+  --mute: #6E6D68;
+  --stone: #A9A59D;
+  --line: #E7E3DA;
+  --edge: #DEDCD6;
+  --mark: #C82D40;
+  --mark: oklch(55% 0.19 20);
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+
+  /* тема одна, светлая (ADR-024): системная тёмная ничего не перекрашивает */
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bone);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* #app — колонка ровно в высоту окна: от неё считают высоту экраны,
+   поэтому сайдбар с «ты: @nick» стоит на месте, а прокручивается
+   только содержимое */
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* знак: четыре угла, один цвет, без скруглений */
+
+.mark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+/* заставка: знак и слово, пока не поднялись модули */
+
+.boot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.boot .mark {
+  width: 20px;
+  height: 20px;
+}
+
+.boot .word {
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+/* формы: рамка 1 px ink, прямые углы, цель нажатия 44 px */
+
+.form {
+  max-width: 360px;
+}
+
+.field {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.field > span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--mute);
+}
+
+input[type="text"],
+input[type="password"] {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 14px;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: var(--bone);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.button {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 14px;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: var(--bone);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.button[disabled] {
+  border-color: var(--edge);
+  color: var(--stone);
+  cursor: default;
+}
+
+/* hidden обязан прятать: display у .button перебивает таблицу браузера,
+   поэтому кнопке нужно отдельное правило */
+
+.button[hidden] {
+  display: none;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-size: 12px;
+  color: var(--text2);
+  cursor: pointer;
+}
+
+.check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ink);
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.row .button {
+  flex: 1;
+  width: auto;
+}
+
+/* три кнопки подтверждения в один ряд помещаются не всегда: переносятся
+   и делят место поровну (ADR-051) */
+
+.row--wrap {
+  flex-wrap: wrap;
+}
+
+.row--wrap .button {
+  flex: 1 1 120px;
+}
+
+/* подписи и строки состояния: акцент mark — только ошибка */
+
+.hint {
+  margin: -4px 0 14px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--mute);
+}
+
+.message {
+  min-height: 18px;
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--mute);
+}
+
+.message--error {
+  color: var(--mark);
+}
+
+.confirm {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--text2);
+}
+
+/* вход и регистрация */
+
+.auth {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.auth__inner {
+  width: 100%;
+  max-width: 320px;
+}
+
+.auth .form {
+  max-width: none;
+}
+
+.auth__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 22px;
+}
+
+.tab {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tab.is-on {
+  background: var(--ink);
+  color: var(--bone);
+}
+
+.tabs__sep {
+  color: var(--stone);
+  font-size: 13px;
+}
+
+/* каркас: сайдбар и экран */
+
+.shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.side {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.brand {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.section {
+  margin: 0;
+  padding: 0 8px 10px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--stone);
+}
+
+.items {
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+}
+
+.items:last-child {
+  margin-bottom: 0;
+}
+
+/* строка списка: чат или «+ новый чат» */
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.item__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item .n {
+  margin-left: auto;
+  color: var(--mark);
+}
+
+/* активный чат — инверсия (docs/identity/brief.md) */
+
+.item.is-active {
+  background: var(--ink);
+  color: var(--bone);
+}
+
+.item.is-active .n {
+  color: var(--bone);
+}
+
+.item--new {
+  margin-bottom: 18px;
+  color: var(--mute);
+}
+
+.me {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: auto;
+  padding: 16px 20px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.me i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--ink);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 56px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+}
+
+/* имя комнаты бывает длиной в 64 символа (ADR-018): в шапке оно
+   обрезается, как и в строке сайдбара, — иначе страница едет вбок */
+
+.head .chat-title,
+.head .title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.back {
+  flex: none;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 0;
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+/* настройки */
+
+.settings {
+  max-width: 460px;
+}
+
+.block {
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+
+.block--first {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.self {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.fp {
+  margin: 0;
+  font-size: 12px;
+  color: var(--mute);
+}
+
+.block .form {
+  margin-top: 14px;
+}
+
+.fp-label {
+  margin: 12px 0 4px;
+  font-size: 11px;
+  color: var(--stone);
+}
+
+.block--first > .fp-label:first-child {
+  margin-top: 0;
+}
+
+.fp-hint {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--mute);
+}
+
+/* уведомления и установка — docs/ui.md, «Настройки» */
+
+.state {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.install {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mute);
+}
+
+/* устройства — docs/ui.md, «Настройки». Строка: восемь символов
+   идентификатора, дата появления и «удалить»; у своей строки вместо
+   кнопки пометка (ADR-052) */
+
+.devices {
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.device__id {
+  flex: none;
+}
+
+.device .tag {
+  color: var(--stone);
+  font-size: 11px;
+}
+
+.device .tag:last-child {
+  margin-left: auto;
+}
+
+.device .link {
+  margin-left: auto;
+  color: var(--mute);
+  font-size: 12px;
+}
+
+/* баннер установки — docs/ui.md, «Баннер установки (iOS)».
+   Цель нажатия у крестика — 44 px, отрицательные поля не дают ей
+   растянуть сам баннер */
+
+.banner-slot {
+  flex: none;
+}
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.banner__text {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--mute);
+}
+
+.banner__close {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  margin: -12px -14px -12px auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--stone);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* участники комнаты — docs/ui.md, «Участники» */
+
+.members {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.member__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member .tag {
+  color: var(--stone);
+  font-size: 11px;
+}
+
+.member .link {
+  margin-left: auto;
+  color: var(--mute);
+  font-size: 12px;
+}
+
+/* строка ввода как отдельная форма: «новый чат» и «добавить участника» */
+
+.form--row + .form--row {
+  margin-top: 12px;
+}
+
+.form--row .button {
+  margin-top: 10px;
+}
+
+/* две кнопки подряд не слипаются в двойную рамку */
+
+.block > .button + .button {
+  margin-top: 10px;
+}
+
+/* чат: шапка, лента, ввод — docs/identity/screens.html */
+
+.chat-title {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* лента прижата к низу: короткая переписка не висит под шапкой */
+
+.feed {
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.grid {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* мобильный: автор над группой сообщений */
+
+.line {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.line.is-head {
+  margin-top: 14px;
+}
+
+.grid > :first-child {
+  margin-top: 0;
+}
+
+.author {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 6px;
+  color: var(--mute);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.author--me {
+  color: var(--mark);
+}
+
+.author .t {
+  color: var(--stone);
+}
+
+.text {
+  min-width: 0;
+}
+
+.text__body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.text--pending {
+  color: var(--stone);
+}
+
+.text--none {
+  color: var(--mute);
+  font-style: italic;
+}
+
+.fail {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  /* пробел вокруг «·» держит gap: у соседних элементов строки он
+     схлопывается */
+  gap: 0 5px;
+  margin: 2px 0 0;
+  color: var(--mark);
+  font-size: 12px;
+}
+
+.link {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* разделители: дата — линией line, «новые» — линией mark */
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 14px 0;
+  color: var(--stone);
+  font-size: 10px;
+}
+
+.divider::before,
+.divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.divider--new {
+  color: var(--mark);
+}
+
+.divider--new::before,
+.divider--new::after {
+  background: var(--mark);
+}
+
+/* ввод: рамка 1 px ink, слева «>» цветом mark */
+
+.compose {
+  flex: none;
+  padding: 0 16px 20px;
+}
+
+.input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px solid var(--ink);
+  font-size: 14px;
+}
+
+.input .p {
+  flex: none;
+  color: var(--mark);
+}
+
+/* фокус показывает вся строка ввода: рамка у неё одна, второй рамки
+   вокруг поля внутри не нужно */
+
+.input:focus-within {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.input .input__field:focus-visible {
+  outline: none;
+}
+
+.input .input__field {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* строка ввода перебивает общее правило для input: рамка здесь одна,
+   у всей строки */
+
+.input textarea.input__field {
+  resize: none;
+  overflow-y: auto;
+  max-height: 7em;
+  /* растёт под текст там, где браузер это умеет; где нет — прокрутка */
+  field-sizing: content;
+}
+
+.input .input__field::placeholder {
+  color: var(--stone);
+}
+
+.input__send {
+  flex: none;
+  align-self: stretch;
+  min-width: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* ввод заблокирован предупреждением о ключе: кнопка «>» тоже гаснет */
+
+.input__send[disabled] {
+  color: var(--stone);
+  cursor: default;
+}
+
+.counter,
+.enter {
+  flex: none;
+  margin-left: auto;
+  color: var(--stone);
+  font-size: 11px;
+}
+
+.counter + .enter {
+  margin-left: 0;
+}
+
+/* полоса над вводом: нет соединения — stone, отказ отправки и смена
+   ключа — mark. У полосы про ключ есть кнопка, поэтому строка — flex */
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 8px;
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--stone);
+}
+
+.bar[hidden] {
+  display: none;
+}
+
+.bar--mark {
+  color: var(--mark);
+}
+
+@media (min-width: 760px) {
+  .shell {
+    display: grid;
+    grid-template-columns: 224px 1fr;
+  }
+
+  .side {
+    border-right: 1px solid var(--line);
+  }
+
+  .brand {
+    height: 64px;
+  }
+
+  .head {
+    height: 64px;
+    padding: 0 32px;
+  }
+
+  .body {
+    padding: 28px 32px;
+  }
+
+  /* сайдбар всегда на месте: «назад» из чата некуда */
+
+  .back--chat {
+    display: none;
+  }
+
+  /* сетка «автор 132 px + текст»: строка сообщения раскрывается
+     в две ячейки сетки, поэтому display: contents */
+
+  .feed {
+    padding: 28px 32px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 132px 1fr;
+    column-gap: 20px;
+    row-gap: 6px;
+    line-height: 1.55;
+  }
+
+  .line,
+  .line.is-head {
+    display: contents;
+    margin-top: 0;
+  }
+
+  .author {
+    padding-top: 2px;
+    font-size: 12px;
+  }
+
+  .divider {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 16px 0;
+    font-size: 11px;
+  }
+
+  .compose {
+    padding: 0 32px 28px;
+  }
+
+  .input {
+    gap: 12px;
+    padding: 0 16px;
+  }
+
+  .input .input__field {
+    padding: 13px 0;
+  }
+
+  /* на десктопе отправляет enter — кнопка не нужна ни в чате, ни в
+     строке `@ник`: в рамке ввода «>» остаётся один, слева
+     (docs/identity/brief.md, «Компоновка») */
+
+  .input__send {
+    display: none;
+  }
+}
+
+/* мобильный: один экран за раз, цели нажатия не меньше 44 px */
+
+@media (max-width: 759px) {
+  .shell[data-screen="list"] .main {
+    display: none;
+  }
+
+  .shell[data-screen="screen"] .side {
+    display: none;
+  }
+
+  .tab,
+  .back,
+  .item,
+  .chat-title,
+  .link {
+    min-height: 44px;
+    /* цель нажатия не меньше 44 px в обе стороны (docs/ui.md,
+       «Доступность»): у коротких надписей вроде «убрать» ширины
+       по тексту не хватает */
+    min-width: 44px;
+  }
+
+  /* подсказку «enter — отправить» видит только десктоп: на мобильном
+     enter переносит строку (docs/ui.md, «Чат») */
+
+  .enter {
+    display: none;
+  }
+
+  /* автор стоит над группой, поэтому пустая ячейка автора не занимает
+     места; на десктопе она держит колонку сетки и остаётся */
+
+  .author:empty {
+    display: none;
+  }
+}
