@@ -2,7 +2,7 @@
 //
 //	bare serve     запустить http-сервер
 //	bare vapid     напечатать пару vapid-ключей
-//	bare version   напечатать ревизию сборки
+//	bare version   напечатать ревизию и время коммита
 package main
 
 import (
@@ -16,11 +16,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime/debug"
 	"syscall"
 	"time"
 
 	"github.com/xmatic-squad/bare/internal/api"
+	"github.com/xmatic-squad/bare/internal/build"
 	"github.com/xmatic-squad/bare/internal/config"
 	"github.com/xmatic-squad/bare/internal/store"
 	"github.com/xmatic-squad/bare/internal/web"
@@ -56,7 +56,7 @@ func usage() {
 использование:
   bare serve     запустить http-сервер
   bare vapid     напечатать пару vapid-ключей
-  bare version   напечатать ревизию сборки
+  bare version   напечатать ревизию и время коммита
 
 настройка — переменные окружения BARE_*, см. docs/deploy.md
 `)
@@ -159,33 +159,17 @@ func vapid() error {
 	return nil
 }
 
+// version печатает, какой код собран в этот бинарь: короткую ревизию
+// и время коммита. Время коммита, а не компиляции: штамп момента сборки
+// делал бы каждую пересборку одного коммита новым файлом, и сверка хеша
+// со сборкой из тега перестала бы что-либо значить (ADR-022, ADR-065).
+// Ревизию, которой нет, и время, которого нет, бинарь не выдумывает
+// (ADR-057).
 func version() {
-	fmt.Println(revision())
-}
-
-// revision — ревизия сборки. У бинаря из изменённого рабочего дерева
-// к ней дописывается «+dirty»: сверка хеша со сборкой из тега — единственное
-// смягчение против подмены клиента (docs/threat-model.md), и чистый хеш
-// коммита у бинаря с чужими правками сводил бы её на нет (ADR-057).
-func revision() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
+	info := build.Current()
+	line := info.Version()
+	if !info.CommitAt.IsZero() {
+		line += " " + info.CommitAt.UTC().Format(time.RFC3339)
 	}
-	var vcs, modified string
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			vcs = s.Value
-		case "vcs.modified":
-			modified = s.Value
-		}
-	}
-	if vcs == "" {
-		return "unknown"
-	}
-	if modified == "true" {
-		return vcs + "+dirty"
-	}
-	return vcs
+	fmt.Println(line)
 }

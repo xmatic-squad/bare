@@ -8,7 +8,7 @@
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bare ./cmd/bare
 ```
 
-Версия бинаря — `vcs.revision` из `debug.ReadBuildInfo()`, печатается по `bare version`; у сборки из изменённого рабочего дерева (`vcs.modified`) к ревизии дописывается `+dirty` — сверка со сборкой из тега не должна проходить молча (ADR-057). `/healthz` отвечает только `ok`.
+Версия бинаря — `vcs.revision` и `vcs.time` из `debug.ReadBuildInfo()`. `bare version` печатает семь символов ревизии и время коммита в UTC: `cfd0ec0 2026-08-23T04:54:16Z`. У сборки из изменённого рабочего дерева (`vcs.modified`) к ревизии дописывается `+dirty` — сверка со сборкой из тега не должна проходить молча (ADR-057); у сборки не из git печатается `unknown`. Времени компиляции в бинаре нет: оно делало бы каждую пересборку одного коммита новым файлом (ADR-065). Те же значения отдаёт `GET /api/config` полями `version` и `commitAt`. `/healthz` отвечает только `ok`.
 
 ## Первичная настройка сервера (один раз)
 
@@ -121,7 +121,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now bare
 
 ## Обновление — `scripts/deploy.sh`
 
-Перед сборкой: если менялись `index.html`, `app.css`, `js/*`, `manifest.json` или иконки — сменить `VERSION` в `web/sw.js` (ADR-023). Без этого установленные приложения получат новую оболочку только вторым открытием, по ETag.
+Перед сборкой: если менялись `index.html`, `app.css`, `js/*`, `manifest.json` или иконки — сменить `VERSION` в `web/sw.js` (ADR-023). Смена версии делает файл воркера другим, и установленные приложения обновляются сами: клиент замечает новую оболочку при запуске или при возвращении в приложение, включает её и перезагружает страницу (ADR-068). Без смены версии новая статика доедет только по ETag, вторым открытием, — и во вкладке, и в установленном приложении одинаково: обработчик `fetch` у них один. Но воркер и предзагруженный список оболочки останутся прежними, а самообновление не запустится вовсе.
 
 ```sh
 #!/bin/sh
@@ -138,6 +138,7 @@ ssh xmatic 'sudo install -m 0755 -o root -g root /tmp/bare /opt/bare/bare && sud
 - `curl -I https://bare.xmatic.team/` — 200, заголовки CSP и nosniff.
 - `curl -N https://bare.xmatic.team/api/events` — 401 (без cookie), без буферизации.
 - `curl -s https://bare.xmatic.team/sw.js | grep VERSION` — версия та, что в репозитории.
+- `curl -s https://bare.xmatic.team/api/config` — `version` равен `git rev-parse --short=7 HEAD` задеплоенного коммита и без `+dirty`. Длина задана явно: сервер режет ревизию ровно до семи символов, а `--short` без числа берёт её из `core.abbrev` и растит по мере роста репозитория.
 - `journalctl -u bare -f` — старт, применённые миграции, нет ошибок.
 
 ## Бэкап

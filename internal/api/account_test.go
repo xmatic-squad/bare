@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/xmatic-squad/bare/internal/api"
+	"github.com/xmatic-squad/bare/internal/build"
 	"github.com/xmatic-squad/bare/internal/config"
 )
 
@@ -80,8 +81,24 @@ func TestConfig(t *testing.T) {
 		VAPIDPublicKey  string `json:"vapidPublicKey"`
 		KDFIterations   int    `json:"kdfIterations"`
 		MaxMessageChars int    `json:"maxMessageChars"`
+		Version         string `json:"version"`
+		CommitAt        int64  `json:"commitAt"`
 	}
 	decodeBody(t, rec, &got)
+	// Имена полей — часть протокола (docs/protocol.md). Сравнение значений
+	// их не закрепляет: у половины полей нулевое значение законно, и ответ
+	// без поля разбирается в тот же ноль — переименованный тег прошёл бы
+	// незамеченным. Поэтому сначала перечень ключей, потом значения.
+	var keys map[string]json.RawMessage
+	decodeBody(t, rec, &keys)
+	for _, name := range []string{
+		"inviteRequired", "vapidPublicKey", "kdfIterations",
+		"maxMessageChars", "version", "commitAt",
+	} {
+		if _, ok := keys[name]; !ok {
+			t.Errorf("в ответе нет поля %q", name)
+		}
+	}
 	if got.InviteRequired {
 		t.Error("inviteRequired: получено true, ожидалось false")
 	}
@@ -94,6 +111,40 @@ func TestConfig(t *testing.T) {
 	if got.MaxMessageChars != 4000 {
 		t.Errorf("maxMessageChars: получено %d, ожидалось 4000", got.MaxMessageChars)
 	}
+	// Версия — то же самое, что печатает `bare version`: одно место,
+	// один формат (ADR-065). Тестовому бинарю vcs.* не проставляются,
+	// поэтому здесь проверяется в том числе поведение без build info —
+	// «unknown» и 0.
+	if !validVersion(got.Version) {
+		t.Errorf("version: получено %q, ожидались до семи hex-символов, «+dirty» или «unknown»", got.Version)
+	}
+	if want := build.Current().Version(); got.Version != want {
+		t.Errorf("version: получено %q, ожидалось %q", got.Version, want)
+	}
+	if want := build.Current().CommitMilli(); got.CommitAt != want {
+		t.Errorf("commitAt: получено %d, ожидалось %d", got.CommitAt, want)
+	}
+	if got.CommitAt < 0 {
+		t.Errorf("commitAt: получено %d, неизвестное время — это 0", got.CommitAt)
+	}
+}
+
+// validVersion — формат поля version: «unknown» либо до семи символов
+// хеша, у сборки из изменённого дерева с суффиксом «+dirty».
+func validVersion(v string) bool {
+	if v == "unknown" {
+		return true
+	}
+	rev, _ := strings.CutSuffix(v, "+dirty")
+	if rev == "" || len(rev) > 7 {
+		return false
+	}
+	for _, c := range rev {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRegisterAndLogin(t *testing.T) {

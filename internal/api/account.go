@@ -8,22 +8,33 @@ import (
 	"time"
 
 	"github.com/xmatic-squad/bare/internal/auth"
+	"github.com/xmatic-squad/bare/internal/build"
 	"github.com/xmatic-squad/bare/internal/config"
 	"github.com/xmatic-squad/bare/internal/store"
 )
 
 // GET /api/config — то, что клиенту нужно знать до входа.
+//
+// version и commitAt отвечают на вопрос «какой код сейчас работает»:
+// короткая ревизия сборки и время коммита, а не момент компиляции
+// (ADR-065). Отдельного эндпоинта им не заводится — конфигурацию клиент
+// читает до входа и так.
 func (s *server) config(w http.ResponseWriter, r *http.Request) {
+	info := build.Current()
 	writeJSON(w, http.StatusOK, struct {
 		InviteRequired  bool   `json:"inviteRequired"`
 		VAPIDPublicKey  string `json:"vapidPublicKey"`
 		KDFIterations   int    `json:"kdfIterations"`
 		MaxMessageChars int    `json:"maxMessageChars"`
+		Version         string `json:"version"`
+		CommitAt        int64  `json:"commitAt"`
 	}{
 		InviteRequired:  s.cfg.InviteCode != "",
 		VAPIDPublicKey:  s.cfg.VAPIDPublic,
 		KDFIterations:   config.KDFIterations,
 		MaxMessageChars: config.MaxMessageChars,
+		Version:         info.Version(),
+		CommitAt:        info.CommitMilli(),
 	})
 }
 

@@ -5,6 +5,12 @@ import * as pwa from "../pwa.js";
 import { INSTALL_IOS, clear, el, mark } from "./dom.js";
 import { mount } from "./chats.js";
 
+// Время коммита — в местной зоне и коротко: день с месяцем и часы
+// с минутами (ADR-067). Год не показывается: версия отвечает на вопрос
+// «что сейчас работает», а не ведёт летопись.
+const BUILD_DAY = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit" });
+const BUILD_TIME = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
+
 // frame отдаёт корень, место под экран и отписку списка чатов.
 // screen — что показывать на мобильном, где виден один экран за раз:
 // "list" или "screen". active — чат, который сейчас открыт.
@@ -38,15 +44,37 @@ function side(ctx, active) {
   list.append(add, items);
   nav.append(list);
 
+  const foot = el("div", "foot");
   const me = el("button", "me");
   me.type = "button";
   const dot = el("i");
   dot.setAttribute("aria-hidden", "true");
-  me.append(dot, el("span", null, `ты: @${ctx.me.nick}`));
+  me.append(dot, el("span", "me__nick", `ты: @${ctx.me.nick}`));
   me.addEventListener("click", () => ctx.go("#/settings"));
-  nav.append(me);
+  foot.append(me);
+  const version = build(ctx.config);
+  if (version !== null) {
+    foot.append(el("span", "build", version));
+  }
+  nav.append(foot);
 
   return { nav, dispose: mount(items, ctx, active) };
+}
+
+// build — версия и время коммита из GET /api/config (ADR-065, ADR-067).
+// Конфигурации нет — офлайн-старт до первого ответа сервера — значит,
+// и строки нет: выдумывать версию не из чего. Время без версии не бывает:
+// её сервер отдаёт всегда, хотя бы как «unknown».
+function build(config) {
+  const version = config?.version;
+  if (typeof version !== "string" || version === "") {
+    return null;
+  }
+  const at = config?.commitAt;
+  if (!Number.isFinite(at) || at <= 0) {
+    return version;
+  }
+  return `${version} · ${BUILD_DAY.format(at)} ${BUILD_TIME.format(at)}`;
 }
 
 // banner — баннер установки на iOS: пуши там работают только
