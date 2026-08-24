@@ -50,13 +50,21 @@ const IMPORT_FAILED = "импорт не удался";
 
 export function renderSettings(root, ctx) {
   root.append(head(ctx));
-  const body = el("div", "body settings");
-  body.append(identity(ctx), notificationsBlock(ctx));
+  const body = el("div", "body settings settings--account");
+  const general = el("div", "settings__column");
+  general.append(notificationsBlock(ctx));
   const install = installBlock();
   if (install !== null) {
-    body.append(install);
+    general.append(install);
   }
-  body.append(devicesBlock(ctx), historyBlock(), passwordBlock(ctx), exitBlock(ctx), deleteBlock(ctx));
+  general.append(devicesBlock(ctx), historyBlock());
+
+  const security = el("div", "settings__column");
+  security.append(passwordBlock(ctx), exitBlock(ctx), deleteBlock(ctx));
+
+  const grid = el("div", "settings__grid");
+  grid.append(general, security);
+  body.append(identity(ctx), grid);
   root.append(body);
 }
 

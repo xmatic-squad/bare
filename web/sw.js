@@ -7,7 +7,7 @@
 // Имя кэша содержит версию; версия — константа, она меняется при релизе,
 // и старые кэши уходят в activate.
 
-const VERSION = "v8";
+const VERSION = "v9";
 const CACHE = `bare-${VERSION}`;
 
 // Оболочка — всё, из чего клиент поднимается без сети. Список явный:
@@ -37,6 +37,7 @@ const SHELL = [
   "/js/ui/shell.js",
   "/icons/icon.svg",
   "/icons/mark.svg",
+  "/icons/profile.svg",
   "/icons/icon-180.png",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
