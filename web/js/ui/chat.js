@@ -10,6 +10,10 @@ import { DESKTOP, clear, el, wide } from "./dom.js";
 const LIMIT = 4000;
 const COUNTER_AT = 3500;
 const COMPOSER_ROWS = 7;
+// Экранная клавиатура уменьшает visual viewport на сотни пикселей. Порог
+// отсекает движение панелей браузера; доля высоты работает и на iPad.
+const KEYBOARD_SHRINK = 120;
+const KEYBOARD_SHRINK_RATIO = 0.18;
 
 // Разделители дат: на десктопе — полная дата, на мобильном — короткая,
 // как в эталоне. Время — ЧЧ:ММ в локальной зоне.
@@ -91,8 +95,10 @@ export function renderChat(root, ctx, chatId) {
   });
   root.append(view.feed);
 
-  root.append(composer(view));
+  view.compose = composer(view);
+  root.append(view.compose);
   sizeField(view);
+  const offKeyboard = watchKeyboard(view);
   // Обычный тап по истории закрывает системную клавиатуру. Интерактивные
   // элементы ленты (сейчас это «повторить») ведут своё действие сами:
   // подменять их на жест закрытия клавиатуры нельзя (ADR-076).
@@ -138,6 +144,7 @@ export function renderChat(root, ctx, chatId) {
     offNet();
     offPeers();
     offRooms();
+    offKeyboard();
     media.removeEventListener("change", onMedia);
     window.removeEventListener("resize", onResize);
   };
@@ -295,6 +302,77 @@ function sizeField(view) {
   }
   const rows = Math.ceil((field.scrollHeight - padding) / line);
   field.rows = Math.max(1, Math.min(COMPOSER_ROWS, rows));
+}
+
+// watchKeyboard снимает нижний safe-area только по консервативной эвристике
+// экранной клавиатуры. На iOS env(safe-area-inset-bottom) ошибочно остаётся
+// прежним и кладёт под composer ещё одну пустую полосу (ADR-076).
+//
+// Одного focus недостаточно: поле бывает сфокусировано с физической
+// клавиатурой. Экранную выдаёт уменьшившийся visual viewport при масштабе 1;
+// pinch-зум, если Safari всё-таки его пропустил, за клавиатуру не считается.
+function watchKeyboard(view) {
+  const viewport = window.visualViewport;
+  let frame = 0;
+  let focusWidth = 0;
+  const update = () => {
+    frame = 0;
+    const page = document.documentElement;
+    const threshold = Math.max(KEYBOARD_SHRINK, page.clientHeight * KEYBOARD_SHRINK_RATIO);
+    const shrunk = viewport !== null
+      && viewport !== undefined
+      && Math.abs(viewport.scale - 1) < 0.01
+      // При повороте width обновляется у двух viewport не одновременно.
+      // До стабилизации размеров не принимаем этот переход за клавиатуру.
+      && Math.abs(page.clientWidth - viewport.width) < 2
+      // WebKit иногда оставляет старую высоту visual viewport даже после
+      // поворота. Смена ширины после фокуса безопасно выключает компенсацию
+      // до следующего тапа по полю.
+      && Math.abs(page.clientWidth - focusWidth) < 2
+      && page.clientHeight - viewport.height > threshold;
+    view.compose.classList.toggle("is-keyboard", document.activeElement === view.field && shrunk);
+  };
+  const schedule = () => {
+    if (frame !== 0) cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(update);
+  };
+  const arm = () => {
+    focusWidth = document.documentElement.clientWidth;
+    schedule();
+  };
+  // На blur не полагаемся на порядок обновления activeElement в WebKit:
+  // класс должен исчезнуть сразу при закрытии клавиатуры в любом случае.
+  const blur = () => {
+    if (frame !== 0) cancelAnimationFrame(frame);
+    frame = 0;
+    focusWidth = 0;
+    view.compose.classList.remove("is-keyboard");
+  };
+  // После ухода приложения в фон WebKit может вернуть старую высоту.
+  // Не рискуем краем экрана: компактный отступ включится снова по тапу.
+  const visibility = () => {
+    if (document.hidden) {
+      blur();
+      return;
+    }
+    schedule();
+  };
+  view.field.addEventListener("pointerdown", arm);
+  view.field.addEventListener("focus", arm);
+  view.field.addEventListener("blur", blur);
+  viewport?.addEventListener("resize", schedule);
+  window.addEventListener("resize", schedule);
+  document.addEventListener("visibilitychange", visibility);
+  schedule();
+  return () => {
+    if (frame !== 0) cancelAnimationFrame(frame);
+    view.field.removeEventListener("pointerdown", arm);
+    view.field.removeEventListener("focus", arm);
+    view.field.removeEventListener("blur", blur);
+    viewport?.removeEventListener("resize", schedule);
+    window.removeEventListener("resize", schedule);
+    document.removeEventListener("visibilitychange", visibility);
+  };
 }
 
 // allow открывает и закрывает ввод: предупреждение о ключе и уход

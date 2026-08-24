@@ -885,6 +885,14 @@ input[type="password"] {
   padding: 0 16px calc(20px + env(safe-area-inset-bottom));
 }
 
+/* При открытой экранной клавиатуре нижний край уже закрыт её прямоугольной
+   поверхностью. Safari продолжает отдавать safe-area домашнего индикатора;
+   заменяем весь нижний отступ на компактные 6 px (ADR-076). */
+
+.compose.is-keyboard {
+  padding-bottom: 6px;
+}
+
 .input {
   display: flex;
   align-items: center;
