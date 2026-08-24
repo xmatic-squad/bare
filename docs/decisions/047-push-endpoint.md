@@ -1,6 +1,6 @@
 # ADR-047: Исходящий запрос к push-сервису
 
-Уточняет [ADR-011](011-web-push.md) и [ADR-023](023-push-and-service-worker.md). Код причины из ответа push-сервиса в журнале — [ADR-064](064-push-failure-reason-in-log.md).
+Уточняет [ADR-011](011-web-push.md) и [ADR-023](023-push-and-service-worker.md). Код причины из ответа push-сервиса в журнале — [ADR-073](073-push-failure-reason-in-log.md).
 
 ## Контекст
 

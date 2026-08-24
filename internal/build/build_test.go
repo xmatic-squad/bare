@@ -9,7 +9,7 @@ import (
 const hash = "9f2c1ab7d3e4c5061728394a5b6c7d8e9f001122"
 
 // Формат версии: семь символов ревизии, «+dirty» у изменённого дерева,
-// «unknown» без ревизии (ADR-057, ADR-065).
+// «unknown» без ревизии (ADR-057, ADR-074).
 func TestVersion(t *testing.T) {
 	cases := []struct {
 		info Info

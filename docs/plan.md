@@ -18,7 +18,7 @@
 ```
 embed.go                         //go:embed web в корне модуля (ADR-025)
 cmd/bare/main.go                 подкоманды: serve, vapid, version
-internal/build/                  ревизия и время коммита из build info (ADR-065)
+internal/build/                  ревизия и время коммита из build info (ADR-074)
 internal/config/                 переменные BARE_*
 internal/store/                  SQLite, migrations/*.sql (embed), запросы
 internal/auth/                   argon2id, сессии, cookie
@@ -36,7 +36,7 @@ web/
   js/sync.js                     устройство, поток событий, приём и отправка
   js/pwa.js                      service worker, самообновление (ADR-068), пуши, установка
   js/ulid.js                     ULID
-  js/zoom.js                     запрет масштабирования (ADR-066)
+  js/zoom.js                     запрет масштабирования (ADR-075)
   js/ui/*.js                     экраны из ui.md
   js/export.js                   .bare
 scripts/deploy.sh

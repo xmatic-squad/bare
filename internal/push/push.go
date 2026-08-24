@@ -70,7 +70,7 @@ const (
 	dropEvery = time.Minute
 )
 
-// Чтение тела ответа push-сервиса ради кода причины (ADR-064).
+// Чтение тела ответа push-сервиса ради кода причины (ADR-073).
 const (
 	// maxReasonBody — сколько байт тела читаем. Код причины стоит в начале
 	// ответа; остальное дочитывается в никуда, ради переиспользования
@@ -331,7 +331,7 @@ func (s *Sender) deliver(j job) {
 		return
 	}
 	defer resp.Body.Close()
-	// Начало тела нужно ради кода причины (ADR-064), остаток дочитывается
+	// Начало тела нужно ради кода причины (ADR-073), остаток дочитывается
 	// в никуда: иначе соединение не переиспользуется.
 	head, _ := io.ReadAll(io.LimitReader(resp.Body, maxReasonBody))
 	io.Copy(io.Discard, resp.Body)
@@ -432,7 +432,7 @@ func (s *Sender) report(format string, args ...any) {
 }
 
 // status — ответ push-сервиса для журнала: код и, если он разобран,
-// короткий код причины из тела (ADR-064).
+// короткий код причины из тела (ADR-073).
 func status(code int, body []byte) string {
 	if r := serviceReason(body); r != "" {
 		return fmt.Sprintf("%d (%s)", code, r)
@@ -443,7 +443,7 @@ func status(code int, body []byte) string {
 // serviceReason достаёт из тела ответа короткий код причины: APNs отвечает
 // {"reason":"BadJwtToken"}, Mozilla — {"errno":…,"error":"Not Found"}.
 // Код — диагностика вендора, а не данные пользователя, и без него отказ
-// не читается: голый «403» сутки выглядел как «что-то с пушами» (ADR-064).
+// не читается: голый «403» сутки выглядел как «что-то с пушами» (ADR-073).
 //
 // Тело всё же приходит снаружи, поэтому в журнал идёт не оно, а то, что
 // прошло safeReason.

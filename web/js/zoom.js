@@ -1,4 +1,4 @@
-// Запрет масштабирования — страховка к строке viewport (ADR-066).
+// Запрет масштабирования — страховка к строке viewport (ADR-075).
 //
 // Основное средство — `maximum-scale=1, user-scalable=no` в index.html
 // и `touch-action: manipulation` в app.css. Safari вправе не послушаться:

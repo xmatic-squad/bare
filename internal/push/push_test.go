@@ -193,7 +193,7 @@ func TestVAPIDSubjectInToken(t *testing.T) {
 }
 
 // Отказ push-сервиса читается по журналу: статус и код причины из тела
-// (ADR-064). Без кода 403 от APNs неотличим от любого другого отказа.
+// (ADR-073). Без кода 403 от APNs неотличим от любого другого отказа.
 func TestServiceStatusInLog(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
@@ -225,7 +225,7 @@ func TestServiceStatusInLog(t *testing.T) {
 
 // Код причины берётся из тела ответа, но телом распоряжается чужая
 // сторона: всё, что на короткий код не похоже, в журнал не идёт вовсе
-// (ADR-064, docs/deploy.md, «Логи»).
+// (ADR-073, docs/deploy.md, «Логи»).
 func TestServiceReason(t *testing.T) {
 	const endpoint = "web.push.apple.com"
 	cases := []struct{ body, want string }{

@@ -1,6 +1,6 @@
 # ADR-022: Деплой — nginx, systemd, кросс-сборка
 
-Уточнён [ADR-032](032-state-permissions.md) (`StateDirectoryMode` и `UMask` в юните), [ADR-056](056-nginx-access-log-off.md) (`access_log off`), [ADR-057](057-version-marks-dirty-tree.md) (`bare version` помечает сборку из изменённого дерева) и [ADR-065](065-version-and-commit-time.md) (версия и время коммита в `GET /api/config`, времени компиляции в бинаре нет).
+Уточнён [ADR-032](032-state-permissions.md) (`StateDirectoryMode` и `UMask` в юните), [ADR-056](056-nginx-access-log-off.md) (`access_log off`), [ADR-057](057-version-marks-dirty-tree.md) (`bare version` помечает сборку из изменённого дерева) и [ADR-074](074-version-and-commit-time.md) (версия и время коммита в `GET /api/config`, времени компиляции в бинаре нет).
 
 ## Контекст
 

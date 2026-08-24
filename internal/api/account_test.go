@@ -112,7 +112,7 @@ func TestConfig(t *testing.T) {
 		t.Errorf("maxMessageChars: получено %d, ожидалось 4000", got.MaxMessageChars)
 	}
 	// Версия — то же самое, что печатает `bare version`: одно место,
-	// один формат (ADR-065). Тестовому бинарю vcs.* не проставляются,
+	// один формат (ADR-074). Тестовому бинарю vcs.* не проставляются,
 	// поэтому здесь проверяется в том числе поведение без build info —
 	// «unknown» и 0.
 	if !validVersion(got.Version) {
