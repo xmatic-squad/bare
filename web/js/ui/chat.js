@@ -79,7 +79,7 @@ export function renderChat(root, ctx, chatId) {
   root.append(head(view));
 
   view.feed = el("div", "feed");
-  view.body = el("div", "grid");
+  view.body = el("div", "feed-list");
   view.body.setAttribute("aria-live", "polite");
   view.feed.append(view.body);
   // Прокрутка к верхнему краю берёт следующую страницу (ADR-053).
@@ -197,9 +197,16 @@ async function refreshRoom(view, known) {
 // composer — полоса состояния и строка ввода: рамка 1 px ink, слева «>»
 // цветом mark. Enter отправляет только на десктопе; на мобильном он делает
 // перенос, а отправляет кнопка «>» справа (docs/ui.md, «Чат»).
+//
+// div, не form: поле формы на iOS Safari/Chrome поднимает над клавиатурой
+// системную панель навигации между полями («‹ ›» и «готово») — лишние
+// ~50 px ради одного поля, которому переходить некуда. role="form" держит
+// ту же семантику для скринридера (docs/ui.md, «Доступность»), без form-а;
+// autocomplete="off" на поле — по той же причине, на случай если панель
+// зависит ещё и от него.
 function composer(view) {
-  const form = el("form", "compose");
-  form.noValidate = true;
+  const form = el("div", "compose");
+  form.setAttribute("role", "form");
 
   view.bar = el("p", "bar");
   view.bar.hidden = true;
@@ -213,12 +220,14 @@ function composer(view) {
   view.field.rows = 1;
   view.field.placeholder = "сообщение";
   view.field.maxLength = view.limit;
+  view.field.autocomplete = "off";
 
   view.counter = el("span", "counter");
   view.counter.hidden = true;
 
   view.send = el("button", "input__send", ">");
-  view.send.type = "submit";
+  view.send.type = "button";
+  view.send.addEventListener("click", () => submit(view));
 
   row.append(prompt, view.field, view.counter, el("span", "enter", "enter — отправить"), view.send);
   form.append(view.bar, row);
@@ -231,10 +240,6 @@ function composer(view) {
     if (!wide()) {
       return;
     }
-    event.preventDefault();
-    submit(view);
-  });
-  form.addEventListener("submit", (event) => {
     event.preventDefault();
     submit(view);
   });
@@ -519,10 +524,23 @@ function line(view, record, previous, parent = view.body) {
   }
   // Подряд идущие сообщения одного автора — без повтора автора.
   const first = marks.length > 0 || !previous || previous.from !== record.from;
-  const node = el("div", first ? "line is-head" : "line");
+  const node = el("div", lineClass(record, view.me, first));
   node.append(author(view, record, first), text(view, record));
   parent.append(...marks, node);
   view.nodes.set(record.id, { node, marks });
+}
+
+// lineClass — своя сторона ленты: свои сообщения вправо, чужие влево
+// (ADR-065), классом на самой строке — выравнивает feed-list.
+function lineClass(record, me, first) {
+  const classes = ["line"];
+  if (record.from === me) {
+    classes.push("line--me");
+  }
+  if (first) {
+    classes.push("is-head");
+  }
+  return classes.join(" ");
 }
 
 // redraw обновляет одну строку на месте: автор и группировка от состояния

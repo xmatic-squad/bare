@@ -23,13 +23,17 @@
   .item { font-size:13px; padding:6px 8px; color:var(--text2); display:flex; }
   .item.active { background:var(--ink); color:var(--bone); }
   .item .n { margin-left:auto; color:var(--mark); }
-  .divider { display:flex; align-items:center; gap:14px; font-size:11px; color:var(--stone); }
+  .divider { display:flex; align-items:center; align-self:stretch; gap:14px; font-size:11px; color:var(--stone); }
   .divider::before, .divider::after { content:""; flex:1; height:1px; background:var(--line); }
   .divider.new { color:var(--mark); }
   .divider.new::before, .divider.new::after { background:var(--mark); }
-  .author { color:var(--mute); font-size:12px; padding-top:2px; }
+  .author { color:var(--mute); font-size:12px; }
   .author.me { color:var(--mark); }
   .author .t { color:var(--stone); }
+  /* поток сообщений: свои — у правого края, чужие — у левого (ADR-065) */
+  .msg { display:flex; flex-direction:column; gap:4px; max-width:min(640px, 85%); }
+  .msg.me { align-self:flex-end; align-items:flex-end; }
+  .msg p { margin:0; }
   .input { display:flex; align-items:center; gap:12px; border:1px solid var(--ink); padding:14px 16px; font-size:14px; }
   .input .p { color:var(--mark); }
   .input .caret { width:8px; height:17px; background:var(--ink); }
@@ -46,21 +50,17 @@
   .me i { width:6px; height:6px; background:var(--ink); }
   .main { display:flex; flex-direction:column; min-width:0; }
   .head { height:64px; display:flex; align-items:center; gap:14px; padding:0 32px; border-bottom:1px solid var(--line); font-size:15px; }
-  .feed { flex:1; padding:28px 32px; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; }
+  .feed { flex:1; padding:28px 32px; display:flex; flex-direction:column; align-items:flex-start; justify-content:flex-end; gap:14px; overflow:hidden; font-size:14px; line-height:1.55; }
   .feed .divider { padding:10px 0 22px; }
-  .grid { display:grid; grid-template-columns:132px 1fr; column-gap:20px; row-gap:6px; font-size:14px; line-height:1.55; }
-  .grid .divider { grid-column:1 / -1; padding:16px 0; }
   .compose { padding:0 32px 28px; }
 
   /* 2b — мобильный */
   .mobile { width:390px; height:700px; display:flex; flex-direction:column; }
   .mobile .head { height:56px; padding:0 20px; gap:12px; font-size:14px; }
   .mobile .mark { width:16px; height:16px; stroke-width:8; }
-  .mobile .feed { padding:20px; gap:14px; }
+  .mobile .feed { padding:20px; font-size:14px; line-height:1.5; }
   .mobile .feed .divider { padding:0; font-size:10px; }
-  .msg { display:flex; flex-direction:column; gap:4px; }
   .msg .author { font-size:11px; }
-  .msg p { margin:0; font-size:14px; line-height:1.5; }
   .mobile .compose { padding:0 16px 20px; }
   .mobile .input { padding:13px 14px; min-height:44px; gap:10px; }
   .mobile .input .caret { width:7px; height:16px; }
@@ -92,23 +92,12 @@
         <div class="head">#general</div>
         <div class="feed">
           <div class="divider">вторник, 18 августа</div>
-          <div class="grid">
-            <div class="author">marta <span class="t">11:52</span></div>
-            <div>выкатила статику на bare.xmatic.team, кэш чистится сам</div>
-            <div></div>
-            <div>вес страницы — 14 кб. без шрифтов было бы 9, но mono того стоит</div>
-            <div class="author">lev <span class="t">11:58</span></div>
-            <div>смотрю network: один html, один css, ноль js до первого сообщения. красиво</div>
-            <div class="author me">kir <span class="t">12:03</span></div>
-            <div>это и есть план. если фича требует бандлер — фича не нужна</div>
-            <div></div>
-            <div>доки пишу прямо в readme, отдельного сайта не будет</div>
-            <div class="divider new">новые</div>
-            <div class="author">marta <span class="t">12:41</span></div>
-            <div>кто-то с hn спрашивает, где мобильное приложение</div>
-            <div class="author">lev <span class="t">12:42</span></div>
-            <div>ответил: браузер и есть приложение</div>
-          </div>
+          <div class="msg"><div class="author">marta <span class="t">11:52</span></div><p>выкатила статику на bare.xmatic.team, кэш чистится сам</p><p>вес страницы — 14 кб. без шрифтов было бы 9, но mono того стоит</p></div>
+          <div class="msg"><div class="author">lev <span class="t">11:58</span></div><p>смотрю network: один html, один css, ноль js до первого сообщения. красиво</p></div>
+          <div class="msg me"><div class="author me">kir <span class="t">12:03</span></div><p>это и есть план. если фича требует бандлер — фича не нужна</p><p>доки пишу прямо в readme, отдельного сайта не будет</p></div>
+          <div class="divider new">новые</div>
+          <div class="msg"><div class="author">marta <span class="t">12:41</span></div><p>кто-то с hn спрашивает, где мобильное приложение</p></div>
+          <div class="msg"><div class="author">lev <span class="t">12:42</span></div><p>ответил: браузер и есть приложение</p></div>
         </div>
         <div class="compose">
           <div class="input"><span class="p">&gt;</span><span>сообщение в #general</span><span class="caret"></span><span class="hint">enter — отправить</span></div>
@@ -125,7 +114,7 @@
         <div class="divider">18 авг</div>
         <div class="msg"><div class="author">marta <span class="t">11:52</span></div><p>выкатила статику на bare.xmatic.team, кэш чистится сам</p><p>вес страницы — 14 кб</p></div>
         <div class="msg"><div class="author">lev <span class="t">11:58</span></div><p>один html, один css, ноль js до первого сообщения. красиво</p></div>
-        <div class="msg"><div class="author me">kir <span class="t">12:03</span></div><p>это и есть план. если фича требует бандлер — фича не нужна</p></div>
+        <div class="msg me"><div class="author me">kir <span class="t">12:03</span></div><p>это и есть план. если фича требует бандлер — фича не нужна</p></div>
         <div class="divider new">новые</div>
         <div class="msg"><div class="author">marta <span class="t">12:41</span></div><p>кто-то с hn спрашивает, где мобильное приложение</p></div>
         <div class="msg"><div class="author">lev <span class="t">12:42</span></div><p>ответил: браузер и есть приложение</p></div>
