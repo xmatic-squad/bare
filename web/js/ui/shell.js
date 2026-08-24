@@ -47,9 +47,12 @@ function side(ctx, active) {
   const foot = el("div", "foot");
   const me = el("button", "me");
   me.type = "button";
-  const dot = el("i");
-  dot.setAttribute("aria-hidden", "true");
-  me.append(dot, el("span", "me__nick", `ты: @${ctx.me.nick}`));
+  me.setAttribute("aria-label", `настройки: @${ctx.me.nick}`);
+  const profile = el("img", "me__icon");
+  profile.src = "/icons/profile.svg";
+  profile.alt = "";
+  profile.draggable = false;
+  me.append(profile, el("span", "me__nick", `@${ctx.me.nick}`));
   me.addEventListener("click", () => ctx.go("#/settings"));
   foot.append(me);
   const version = build(ctx.config);

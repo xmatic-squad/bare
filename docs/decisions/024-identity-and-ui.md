@@ -1,6 +1,6 @@
 # ADR-024: Айдентика «Скобы», интерфейс и язык
 
-Уточнён [ADR-075](075-no-zoom-app-feel.md) (масштабирование запрещено, размеры шрифтов прежние), [ADR-067](067-version-in-sidebar-foot.md) (версия и время коммита в подвале сайдбара), [ADR-076](076-ios-input-accessory-is-system.md) (строка сообщения — `textarea`) и [ADR-077](077-message-alignment-by-pointer.md) (стороны сообщений зависят от способа ввода).
+Уточнён [ADR-075](075-no-zoom-app-feel.md) (масштабирование запрещено, размеры шрифтов прежние), [ADR-067](067-version-in-sidebar-foot.md) (версия и время коммита в подвале сайдбара), [ADR-076](076-ios-input-accessory-is-system.md) (строка сообщения — `textarea`), [ADR-077](077-message-alignment-by-pointer.md) (стороны сообщений зависят от способа ввода) и [ADR-079](079-profile-glyph-and-settings-layout.md) (фиксированная пиктограмма профиля и компоновка настроек).
 
 ## Контекст
 
