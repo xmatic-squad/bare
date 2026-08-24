@@ -167,11 +167,21 @@ function head(view) {
   const back = el("button", "back back--chat", "назад");
   back.type = "button";
   back.addEventListener("click", () => view.ctx.go("#/"));
-  view.title = el("button", "chat-title", titleText(view));
+  view.title = el("button", "chat-title");
   view.title.type = "button";
   view.title.addEventListener("click", () => view.ctx.go(view.roomId !== null
     ? `#/room/${view.roomId}/members`
     : `#/contact/${view.peer}`));
+  if (view.roomId !== null) {
+    // Состав был спрятан за неочевидным нажатием на имя. Одна составная
+    // кнопка сохраняет место в мобильной шапке: имя сокращается, а смысл
+    // действия и число участников остаются видны (ADR-078).
+    view.titleName = el("span", "chat-title__name", titleText(view));
+    view.titleMembers = el("span", "chat-title__members", "· участники");
+    view.title.append(view.titleName, view.titleMembers);
+  } else {
+    view.title.textContent = titleText(view);
+  }
   bar.append(back, view.title);
   return bar;
 }
@@ -208,7 +218,16 @@ async function refreshRoom(view, known) {
     return;
   }
   view.name = record?.title || view.roomId;
-  view.title.textContent = titleText(view);
+  const title = titleText(view);
+  view.titleName.textContent = title;
+  const count = record?.hidden === true || !Array.isArray(record?.members)
+    ? null
+    : record.members.length;
+  view.titleMembers.textContent = count === null ? "· участники" : `· участники ${count}`;
+  view.title.setAttribute(
+    "aria-label",
+    count === null ? `${title}, открыть участников` : `${title}, открыть участников: ${count}`,
+  );
   hint(view, `сообщение в #${shortName(view.name)}`);
   // Скрытая запись комнаты — это room_left или собственный выход:
   // отправлять больше некуда, и сервер ответил бы not_member.
