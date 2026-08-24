@@ -330,22 +330,12 @@ function apply() {
 // Набранным считается только то, куда набирают: textarea и поля из
 // TYPED. Чекбокс, файл, скрытое поле и кнопка непусты сами по себе,
 // а обновление они бы запретили насовсем.
-//
-// Строка сообщения в чате — редактируемый блок, а не поле формы
-// (ADR-069): value у него нет, набранное лежит в textContent. Считается
-// и закрытый блок: ввод бывает заблокирован предупреждением о ключе,
-// а недописанное в нём остаётся.
 function typed() {
   for (const node of document.querySelectorAll("input, textarea")) {
     if (node.value === "") {
       continue;
     }
     if (node.tagName === "TEXTAREA" || TYPED.has(node.type)) {
-      return true;
-    }
-  }
-  for (const node of document.querySelectorAll("[contenteditable]")) {
-    if (node.textContent !== "") {
       return true;
     }
   }

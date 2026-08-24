@@ -59,11 +59,7 @@ function tap(event) {
 // дважды подряд — обычное дело. Цена мала: до элементов управления зум
 // по двойному тапу не доходит и без страховки — `touch-action:
 // manipulation` стоит на документе.
-//
-// Строка сообщения — редактируемый блок, а не textarea (ADR-069), и она
-// в этом перечне: погашенный тап не доносит до неё ни click, ни фокус,
-// то есть второй тап подряд не ставил бы курсор в поле ввода.
 function control(target) {
   return typeof target?.closest === "function"
-    && target.closest("button, input, textarea, select, label, a, [contenteditable]") !== null;
+    && target.closest("button, input, textarea, select, label, a") !== null;
 }

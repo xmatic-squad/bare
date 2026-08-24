@@ -30,7 +30,7 @@
   .author { color:var(--mute); font-size:12px; }
   .author.me { color:var(--mark); }
   .author .t { color:var(--stone); }
-  /* поток сообщений: свои — у правого края, чужие — у левого (ADR-065) */
+  /* поток сообщений: на touch своё справа, на десктопе всё слева (ADR-077) */
   .msg { display:flex; flex-direction:column; gap:4px; max-width:min(640px, 85%); }
   .msg.me { align-self:flex-end; align-items:flex-end; }
   .msg p { margin:0; }
@@ -42,6 +42,7 @@
 
   /* 2a — десктоп */
   .desktop { width:1120px; height:700px; display:grid; grid-template-columns:224px 1fr; }
+  .desktop .msg.me { align-self:flex-start; align-items:flex-start; }
   .side { border-right:1px solid var(--line); display:flex; flex-direction:column; }
   .brand { height:64px; display:flex; align-items:center; gap:10px; padding:0 20px; border-bottom:1px solid var(--line); font-size:15px; letter-spacing:-0.02em; }
   .list { padding:20px; display:flex; flex-direction:column; gap:2px; }
