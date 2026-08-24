@@ -25,14 +25,61 @@ body {
   height: 100%;
 }
 
+/* масштабирования нет (ADR-075). manipulation снимает зум по двойному тапу
+   и задержку 300 мс, которую браузер держит, ожидая второго касания;
+   прокрутку и щипок правило не трогает — щипок запрещён в viewport.
+   Правило стоит на html: двойной тап — жест документа, и браузер берёт
+   пересечение значений всех предков */
+
+html {
+  touch-action: manipulation;
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
+  /* виден вырез: viewport-fit=cover пускает страницу под скруглённые углы,
+     под боковой вырез в альбомной ориентации и под верхнюю системную
+     полосу. Полосу над страницей держит мета-строка о стиле полосы
+     (ADR-075), поэтому верхняя вставка обычно нулевая и не делает ничего;
+     там, где она не нулевая, шапка не уезжает под часы */
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
   background: var(--bone);
   color: var(--ink);
   font-family: var(--mono);
   font-size: 14px;
   line-height: 1.55;
+  overscroll-behavior: none;
   -webkit-text-size-adjust: 100%;
+}
+
+/* интерфейс не выделяется: долгое нажатие по шапке, списку и кнопкам
+   вызывает лупу и «копировать», а копировать там нечего. Текст сообщений,
+   отпечатки и поля ввода выделяются как обычно — их именно копируют
+   (ADR-075) */
+
+.side,
+.head,
+.brand,
+.divider,
+.input .p,
+.counter,
+.enter,
+button {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* прокрутка внутренних лент не уходит в страницу: отскок и «потянуть
+   для обновления» ощущения приложения не добавляют */
+
+.list,
+.body,
+.feed,
+.auth {
+  overscroll-behavior: contain;
 }
 
 /* #app — колонка ровно в высоту окна: от неё считают высоту экраны,
@@ -360,16 +407,34 @@ input[type="password"] {
   color: var(--mute);
 }
 
+/* подвал сайдбара: «ты: @nick» и версия с временем коммита (ADR-067).
+   Версия не кнопка: нажимать в ней нечего, поэтому она стоит рядом
+   с кнопкой, а не внутри неё. В сайдбаре 224 px они рядом не помещаются
+   никогда — версия занимает вторую строку и остаётся справа; на мобильном,
+   где сайдбар во всю ширину, обе стоят в одной строке */
+
+.foot {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin-top: auto;
+  /* нижняя системная полоса iPhone проходит поверх страницы: подвал
+     отступает от неё, а не прячется под ней (ADR-075) */
+  padding: 6px 20px calc(6px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+}
+
 .me {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 44px;
-  margin-top: auto;
-  padding: 16px 20px;
+  padding: 0;
   border: 0;
-  border-top: 1px solid var(--line);
   background: none;
   color: var(--mute);
   font: inherit;
@@ -383,6 +448,30 @@ input[type="password"] {
   width: 6px;
   height: 6px;
   background: var(--ink);
+}
+
+/* ник бывает в 32 символа (ADR-019): он обрезается, а версия остаётся
+   целой — читать половину хеша незачем */
+
+.me__nick {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* версия выделяется: с неё начинается разговор о поломке (ADR-067),
+   а на iPhone скопировать её иначе нечем — ни строки адреса, ни консоли
+   там нет. Общий запрет выделения снят с неё так же, как с текста
+   сообщений и отпечатков (ADR-075) */
+
+.build {
+  flex: none;
+  margin-left: auto;
+  color: var(--stone);
+  font-size: 11px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .main {
@@ -782,7 +871,8 @@ input[type="password"] {
 
 .compose {
   flex: none;
-  padding: 0 16px 20px;
+  /* то же, что у подвала: строка ввода не уезжает под системную полосу */
+  padding: 0 16px calc(20px + env(safe-area-inset-bottom));
 }
 
 .input {
@@ -815,7 +905,10 @@ input[type="password"] {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  padding: 12px 0;
+  /* отступ назван: высота блока считается вместе с ним (box-sizing —
+     border-box), и предел роста строки сообщения меряется от него */
+  --field-pad: 12px;
+  padding: var(--field-pad) 0;
   border: 0;
   border-radius: 0;
   background: none;
@@ -825,15 +918,26 @@ input[type="password"] {
   line-height: 1.5;
 }
 
-/* строка ввода перебивает общее правило для input: рамка здесь одна,
-   у всей строки */
+/* строка сообщения — редактируемый блок, а не поле формы (ADR-069):
+   растёт под текст сама, дальше семи строк — прокрутка. Переносы строк
+   в ней настоящие символы, поэтому pre-wrap; длинное слово рвётся,
+   иначе строка ввода уезжает вбок */
 
-.input textarea.input__field {
-  resize: none;
+.input .input__field--text {
   overflow-y: auto;
-  max-height: 7em;
-  /* растёт под текст там, где браузер это умеет; где нет — прокрутка */
-  field-sizing: content;
+  /* семь строк — это семь высот строки плюс вертикальные отступы:
+     без них предел вышел бы вдвое ниже обещанного */
+  max-height: calc(7 * 1.5em + 2 * var(--field-pad));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* подсказка пустой строки: placeholder у блока не бывает, текст приходит
+   атрибутом data-hint (ADR-069) */
+
+.input .input__field--text:empty::before {
+  content: attr(data-hint);
+  color: var(--stone);
 }
 
 .input .input__field::placeholder {
@@ -929,7 +1033,7 @@ input[type="password"] {
   }
 
   .compose {
-    padding: 0 32px 28px;
+    padding: 0 32px calc(28px + env(safe-area-inset-bottom));
   }
 
   .input {
@@ -938,7 +1042,7 @@ input[type="password"] {
   }
 
   .input .input__field {
-    padding: 13px 0;
+    --field-pad: 13px;
   }
 
   /* на десктопе отправляет enter — кнопка не нужна ни в чате, ни в
@@ -978,5 +1082,12 @@ input[type="password"] {
 
   .enter {
     display: none;
+  }
+
+  /* строка сообщения — тоже цель нажатия не меньше 44 px (docs/ui.md,
+     «Доступность»): своей высоты у блока нет, её задаёт содержимое */
+
+  .input .input__field--text {
+    min-height: 44px;
   }
 }

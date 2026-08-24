@@ -42,7 +42,9 @@ WrappedKey { to: nick, iv: string, ct: string }
 
 ## Публичные
 
-`GET /api/config` → `200 {inviteRequired: bool, vapidPublicKey: string, kdfIterations: number, maxMessageChars: 4000}`
+`GET /api/config` → `200 {inviteRequired: bool, vapidPublicKey: string, kdfIterations: number, maxMessageChars: 4000, version: string, commitAt: number}`
+
+`version` — короткая ревизия сборки: семь символов хеша коммита, с суффиксом `+dirty` у бинаря из изменённого дерева (ADR-057) и `unknown` у сборки не из git. `commitAt` — время коммита в миллисекундах Unix, `0` если оно неизвестно. Это время коммита, а не момент компиляции: штамп времени сборки лишил бы смысла сверку хеша бинаря со сборкой из тега (ADR-022, ADR-074). Те же значения печатает `bare version`. Отдельного эндпоинта у них нет.
 
 `GET /api/kdf?nick=<nick>` → `200 {iterations}`. Для неизвестного ника — `kdfIterations` из конфигурации, тем же статусом. Скрытием существования ника ответ не занимается: у аккаунта, не входившего после повышения цели, число итераций своё (ADR-062), а сам факт, что ник существует, публичен (ADR-019).
 

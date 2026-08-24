@@ -49,6 +49,10 @@ export function renderChat(root, ctx, chatId) {
     roomId: sync.roomIdOf(chatId),
     limit: ctx.config?.maxMessageChars ?? LIMIT,
     alive: true,
+    // Каким значением открыт редактируемый блок строки ввода:
+    // "plaintext-only" или "true" (ADR-069). От него зависит, разбирает ли
+    // браузер вставку и перенос строки сам или это делаем мы.
+    edit: "true",
     // Имя комнаты; до чтения записи чата вместо него идентификатор,
     // как в db.blankChat.
     name: sync.roomIdOf(chatId),
@@ -185,12 +189,11 @@ async function refreshRoom(view, known) {
   }
   view.name = record?.title || view.roomId;
   view.title.textContent = titleText(view);
-  view.field.placeholder = `сообщение в #${shortName(view.name)}`;
+  hint(view, `сообщение в #${shortName(view.name)}`);
   // Скрытая запись комнаты — это room_left или собственный выход:
   // отправлять больше некуда, и сервер ответил бы not_member.
   view.gone = record?.hidden === true;
-  view.field.disabled = view.gone;
-  view.send.disabled = view.gone;
+  allow(view, !view.gone);
   paintBar(view);
 }
 
@@ -198,12 +201,10 @@ async function refreshRoom(view, known) {
 // цветом mark. Enter отправляет только на десктопе; на мобильном он делает
 // перенос, а отправляет кнопка «>» справа (docs/ui.md, «Чат»).
 //
-// div, не form: поле формы на iOS Safari/Chrome поднимает над клавиатурой
-// системную панель навигации между полями («‹ ›» и «готово») — лишние
-// ~50 px ради одного поля, которому переходить некуда. role="form" держит
-// ту же семантику для скринридера (docs/ui.md, «Доступность»), без form-а;
-// autocomplete="off" на поле — по той же причине, на случай если панель
-// зависит ещё и от него.
+// Строка сообщения — редактируемый блок, а не поле формы (ADR-069): над
+// клавиатурой iOS рисует полосу помощника форм, и бывает она только
+// у input и textarea. Со страницы её не убрать, а в чате она занимает место
+// и ничего не делает: поле на экране одно, переходить стрелками некуда.
 function composer(view) {
   const form = el("div", "compose");
   form.setAttribute("role", "form");
@@ -216,11 +217,22 @@ function composer(view) {
   const prompt = el("span", "p", ">");
   prompt.setAttribute("aria-hidden", "true");
 
-  view.field = el("textarea", "input__field");
-  view.field.rows = 1;
-  view.field.placeholder = "сообщение";
-  view.field.maxLength = view.limit;
-  view.field.autocomplete = "off";
+  view.field = el("div", "input__field input__field--text");
+  view.edit = editing(view.field);
+  // Поле ввода без input: экранному диктору о нём говорят роль и подпись,
+  // подпись же стоит подсказкой в пустом блоке (docs/ui.md, «Доступность»).
+  view.field.setAttribute("role", "textbox");
+  view.field.setAttribute("aria-multiline", "true");
+  hint(view, "сообщение");
+  // Клавиша Enter на мобильном переносит строку, а не отправляет: отправка
+  // там на кнопке «>» (docs/ui.md, «Чат»). Поэтому «enter», а не «send»:
+  // подпись клавиши обещает то, что клавиша делает.
+  view.field.enterKeyHint = "enter";
+  // Сообщение — обычная речь, а не ник и не пароль: заглавная в начале
+  // предложения и исправление опечаток тут к месту (в формах входа
+  // и «нового чата» они, наоборот, выключены).
+  view.field.autocapitalize = "sentences";
+  view.field.setAttribute("autocorrect", "on");
 
   view.counter = el("span", "counter");
   view.counter.hidden = true;
@@ -232,34 +244,296 @@ function composer(view) {
   row.append(prompt, view.field, view.counter, el("span", "enter", "enter — отправить"), view.send);
   form.append(view.bar, row);
 
-  view.field.addEventListener("input", () => count(view));
-  view.field.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+  // Предел держится до вставки, а не после: обрезается приходящее,
+  // а набранное остаётся на месте (ADR-071).
+  view.field.addEventListener("beforeinput", (event) => cap(view, event));
+  view.field.addEventListener("input", (event) => {
+    if (event.isComposing) {
+      // Пока идёт композиция IME, содержимое не трогаем: правка оборвала
+      // бы её на полуслове, а подтверждённое не попало бы в блок вовсе.
+      // Подтверждённое разберёт compositionend (ADR-071).
       return;
     }
-    if (!wide()) {
-      return;
-    }
-    event.preventDefault();
-    submit(view);
+    fit(view);
+    tail(view);
+    count(view);
   });
-
+  view.field.addEventListener("compositionend", () => {
+    fit(view);
+    tail(view);
+    count(view);
+  });
+  view.field.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) {
+      return;
+    }
+    if (wide() && !event.shiftKey) {
+      event.preventDefault();
+      submit(view);
+      return;
+    }
+    if (view.edit !== "plaintext-only") {
+      // Блок без plaintext-only ставит на Enter <div> или <br>, а значение
+      // читается textContent: перенос вписываем сами (ADR-069).
+      event.preventDefault();
+      insert(view, "\n");
+    }
+  });
+  if (view.edit !== "plaintext-only") {
+    // plaintext-only приносит из буфера и мыши только текст сам. Без него
+    // в блок приезжает чужая разметка, поэтому вставка и перенос — наши.
+    view.field.addEventListener("paste", (event) => {
+      event.preventDefault();
+      insert(view, event.clipboardData?.getData("text/plain") ?? "");
+    });
+    view.field.addEventListener("drop", (event) => {
+      event.preventDefault();
+      insert(view, event.dataTransfer?.getData("text/plain") ?? "");
+    });
+    // Перетаскивание изнутри блока браузер сделал бы переносом: вписал бы
+    // текст на новом месте и убрал со старого. Вставку мы делаем сами,
+    // отменяя действие по умолчанию, — уносить исходное браузеру нечем,
+    // и перенос молча оборачивался бы удвоением. Объявляем копирование:
+    // тогда это честная копия (ADR-071).
+    view.field.addEventListener("dragstart", (event) => {
+      if (event.dataTransfer !== null) {
+        event.dataTransfer.effectAllowed = "copy";
+      }
+    });
+  }
   return form;
 }
 
+// editing включает редактирование блока и отдаёт значение, которое
+// применилось. Нужен plaintext-only: в нём браузер кладёт в блок только
+// текст, чем бы ни был буфер обмена, и разметке взяться неоткуда.
+//
+// Знают его не все браузеры, и незнакомое значение атрибута делает блок
+// нередактируемым вовсе — то есть строка ввода перестала бы работать молча.
+// Поэтому оно не назначается, а проверяется чтением: не применилось —
+// остаётся "true", а вставку, перетаскивание и перенос строки разбирает
+// composer (ADR-069).
+function editing(field) {
+  try {
+    field.contentEditable = "plaintext-only";
+  } catch {
+    // Браузер, которому это значение незнакомо, бросает SyntaxError.
+  }
+  if (field.contentEditable === "plaintext-only") {
+    return "plaintext-only";
+  }
+  field.contentEditable = "true";
+  return "true";
+}
+
+// hint — подсказка в пустой строке ввода (docs/ui.md, «Чат»). placeholder
+// у редактируемого блока не бывает: текст кладётся атрибутом, а рисует его
+// правило CSS через :empty::before. Тот же текст — подпись для экранного
+// диктора: другой у строки ввода нет.
+function hint(view, text) {
+  view.field.dataset.hint = text;
+  view.field.setAttribute("aria-label", text);
+}
+
+// allow открывает и закрывает ввод: предупреждение о ключе и уход
+// из комнаты гасят и блок, и кнопку «>» (ADR-016, ADR-044). У блока нет
+// disabled — закрытый перестаёт быть редактируемым и говорит об этом
+// экранному диктору.
+function allow(view, on) {
+  view.field.contentEditable = on ? view.edit : "false";
+  if (on) {
+    view.field.removeAttribute("aria-disabled");
+  } else {
+    view.field.setAttribute("aria-disabled", "true");
+  }
+  view.send.disabled = !on;
+}
+
+// cap держит предел до вставки: обрезается то, что приходит в блок,
+// а набранное остаётся на месте — так же, как считал maxLength у textarea
+// (ADR-071). Влезающее браузер вставляет сам: тогда и отмена (cmd+z)
+// остаётся его, а не нашей.
+//
+// Композицию IME не трогаем вовсе: отменённая на полуслове, она уносит
+// с собой и подтверждённый ввод. Лишнее в ней снимет fit на compositionend.
+function cap(view, event) {
+  if (event.isComposing || event.inputType === "insertCompositionText") {
+    return;
+  }
+  if (!event.inputType.startsWith("insert")) {
+    return;
+  }
+  // Перенос строки и прочее без текста считаем одним символом: тогда cap
+  // вмешивается только тогда, когда места не осталось совсем.
+  const text = event.data ?? event.dataTransfer?.getData("text/plain") ?? "";
+  const range = target(view, event);
+  if ((text === "" ? 1 : text.length) <= free(view, range)) {
+    return;
+  }
+  event.preventDefault();
+  insert(view, text, range);
+}
+
+// target — куда пойдёт вставка: диапазон, который браузер собирается
+// заменить (beforeinput знает его точно — это не всегда выделение:
+// вставка мышью идёт туда, куда отпустили), иначе выделение в блоке.
+function target(view, event = null) {
+  const ranges = event?.getTargetRanges?.() ?? [];
+  if (ranges.length > 0) {
+    const range = document.createRange();
+    range.setStart(ranges[0].startContainer, ranges[0].startOffset);
+    range.setEnd(ranges[0].endContainer, ranges[0].endOffset);
+    return view.field.contains(range.commonAncestorContainer) ? range : null;
+  }
+  const selection = getSelection();
+  const now = selection !== null && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  return now !== null && view.field.contains(now.commonAncestorContainer) ? now : null;
+}
+
+// free — сколько символов ещё влезет туда, куда идёт вставка: предел минус
+// то, что останется от набранного, когда заменяемое уйдёт.
+function free(view, range) {
+  return view.limit - (value(view).length - (range === null ? 0 : range.toString().length));
+}
+
+// value — набранное так, как оно уедет собеседнику. В plaintext-only
+// браузер держит последнюю строку вторым «\n» в самом конце: в textContent
+// он виден, а в сообщении его нет — его снимает trim в sync.send. Считаем
+// и режем по тому же, что отправляем (ADR-071). В запасном пути последнюю
+// строку держит <br>, которого в textContent нет вовсе, и перенос в конце
+// там настоящий.
+function value(view) {
+  const text = view.field.textContent;
+  return view.edit === "plaintext-only" && text.endsWith("\n") ? text.slice(0, -1) : text;
+}
+
+// cut режет текст по пределу, не разрывая суррогатную пару: половина пары
+// уехала бы собеседнику битым символом.
+function cut(text, limit) {
+  if (limit <= 0) {
+    return "";
+  }
+  if (text.length <= limit) {
+    return text;
+  }
+  const last = text.charCodeAt(limit - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit);
+}
+
+// fit — последняя страховка предела (docs/ui.md, «Чат»): лишнее в блок
+// попадает мимо cap — композицией IME или вставкой, о которой браузер
+// не рассказал. Снимается ровно хвост сверх предела, а не переписывается
+// блок целиком: правка узлов оставляет курсор на месте и не сносит стек
+// отмены. Опустевший блок остаётся без узлов: подсказка стоит правилом
+// :empty, а браузер оставляет в опустевшем блоке <br>, и с ним подсказки
+// не видно.
+function fit(view) {
+  const raw = view.field.textContent;
+  const text = value(view);
+  const keep = cut(text, view.limit);
+  if (keep.length < text.length) {
+    // Вместе с лишним уходит и заполнитель последней строки, если он есть:
+    // он в самом конце, а браузер ставит его снова, когда понадобится.
+    trim(view.field, raw.length - keep.length);
+    return;
+  }
+  if (raw === "" && view.field.firstChild !== null) {
+    clear(view.field);
+  }
+}
+
+// trim снимает с хвоста блока лишние единицы текста, не трогая остального:
+// textContent = … переписал бы блок целиком и унёс бы и курсор, и отмену.
+function trim(field, extra) {
+  const walker = document.createTreeWalker(field, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode() !== null) {
+    nodes.push(walker.currentNode);
+  }
+  let left = extra;
+  for (let i = nodes.length - 1; i >= 0 && left > 0; i -= 1) {
+    const node = nodes[i];
+    const take = Math.min(left, node.length);
+    node.deleteData(node.length - take, take);
+    left -= take;
+  }
+}
+
+// insert вписывает текст туда, куда идёт вставка, обрезая его по свободному
+// месту. Своими руками, а не execCommand: тот в Chrome разбирает перенос
+// строки в <div>, а в блоке живёт только текст.
+function insert(view, text, where) {
+  // where — диапазон, который назвал beforeinput. Его не передали — берём
+  // выделение; выделения в блоке нет — вписываем в конец.
+  const range = where === undefined ? target(view) : where;
+  const fitted = cut(text, free(view, range));
+  if (fitted === "") {
+    return;
+  }
+  const node = document.createTextNode(fitted);
+  const selection = getSelection();
+  if (range === null) {
+    view.field.append(node);
+  } else {
+    range.deleteContents();
+    range.insertNode(node);
+  }
+  if (selection !== null) {
+    const at = document.createRange();
+    at.setStartAfter(node);
+    at.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(at);
+  }
+  // Вставка делит текст на два-три соседних узла; курсор normalize
+  // переставляет сам.
+  view.field.normalize();
+  // Своё изменение блока события input не порождает: счётчик, предел
+  // и последнюю строку трогаем руками.
+  fit(view);
+  tail(view);
+  count(view);
+}
+
+// tail держит последнюю пустую строку видимой. Перенос в самом конце
+// браузер не рисует — строки после него нет, — и курсор оставался бы
+// на прежней строке, а набранное дальше уезжало бы перед переносом.
+// Пустую строку держит <br>: тот самый заполнитель, который браузер сам
+// ставит в опустевший блок. В textContent его нет, и на отправляемый текст
+// он не влияет.
+//
+// В plaintext-only это не нужно: там последнюю строку браузер ведёт сам,
+// своим переносом, и лишний заполнитель дал бы вторую пустую строку.
+function tail(view) {
+  if (view.edit === "plaintext-only") {
+    return;
+  }
+  const last = view.field.lastChild;
+  const wants = view.field.textContent.endsWith("\n");
+  if (wants && (last === null || last.nodeName !== "BR")) {
+    view.field.append(document.createElement("br"));
+    return;
+  }
+  if (!wants && last !== null && last.nodeName === "BR") {
+    last.remove();
+  }
+}
+
 // count — счётчик остатка: появляется после порога (docs/ui.md, «Чат»).
+// Считается то, что уедет: заполнитель последней строки в счёт не идёт
+// (ADR-071).
 function count(view) {
-  const length = view.field.value.length;
+  const length = value(view).length;
   view.counter.textContent = String(view.limit - length);
   view.counter.hidden = length <= COUNTER_AT;
 }
 
 function submit(view) {
-  const text = view.field.value;
+  const text = view.field.textContent;
   if (view.blocked || view.gone || text.trim() === "") {
     return;
   }
-  view.field.value = "";
+  view.field.textContent = "";
   count(view);
   run(view, () => sync.send(view.chatId, text));
 }
@@ -615,9 +889,8 @@ async function checkPeer(view) {
     return;
   }
   view.blocked = !!record?.pending;
-  // Ввод заблокирован целиком: и поле, и кнопка «>» на мобильном.
-  view.field.disabled = view.blocked;
-  view.send.disabled = view.blocked;
+  // Ввод заблокирован целиком: и блок, и кнопка «>» на мобильном.
+  allow(view, !view.blocked);
   paintBar(view);
 }
 
