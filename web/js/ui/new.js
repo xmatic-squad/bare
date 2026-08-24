@@ -1,5 +1,5 @@
-// Новый чат — docs/ui.md, «Новый чат». Две строки ввода: `@ник` открывает
-// личный чат, `#имя комнаты` заводит комнату.
+// Новый чат — docs/ui.md, «Новый чат». Это выбор одного действия:
+// личный чат по нику или новая приватная комната (ADR-078).
 
 import * as sync from "../sync.js";
 import { el, message, setError, setNote } from "./dom.js";
@@ -8,99 +8,164 @@ import { el, message, setError, setNote } from "./dom.js";
 // единицы UTF-16, а сервер — руны: за предел это не выпустит.
 const ROOM_NAME_MAX = 64;
 
+const MODES = [
+  ["dm", "личный чат"],
+  ["room", "новая комната"],
+];
+
 export function renderNew(root, ctx) {
   root.append(head(ctx));
 
-  const body = el("div", "body");
-  // Место под ошибку одно на оба поля: строка состояния у экрана одна
-  // (ADR-028).
+  const body = el("div", "body new");
+  const dm = direct(ctx);
+  const room = roomForm(ctx);
+  const panels = { dm, room };
+  let mode = "dm";
+
+  const tabs = el("div", "tabs new__tabs");
+  tabs.setAttribute("role", "group");
+  tabs.setAttribute("aria-label", "что открыть");
+
+  const buttons = new Map();
+  const select = (next, focus = false) => {
+    mode = next;
+    for (const [name, panel] of Object.entries(panels)) {
+      const on = name === mode;
+      panel.root.hidden = !on;
+      const tab = buttons.get(name);
+      tab.classList.toggle("is-on", on);
+      tab.setAttribute("aria-pressed", String(on));
+    }
+    if (focus) {
+      panels[mode].field.focus();
+    }
+  };
+
+  MODES.forEach(([name, text], index) => {
+    if (index > 0) {
+      const sep = el("span", "tabs__sep", "/");
+      sep.setAttribute("aria-hidden", "true");
+      tabs.append(sep);
+    }
+    const tab = el("button", "tab", text);
+    tab.type = "button";
+    tab.addEventListener("click", () => select(name, true));
+    buttons.set(name, tab);
+    tabs.append(tab);
+  });
+
+  body.append(tabs, dm.root, room.root);
+  root.append(body);
+  select(mode);
+}
+
+function direct(ctx) {
+  const panel = section("напишите человеку по нику.");
+  const input = field("ник человека", "@ник");
+  const go = el("button", "button", "написать");
+  go.type = "submit";
   const note = message();
+  panel.form.append(input.wrap, go, note);
 
-  const dm = row("@ник");
-  const room = row("#имя комнаты");
-  room.field.maxLength = ROOM_NAME_MAX;
-
-  dm.form.addEventListener("submit", async (event) => {
+  panel.form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (dm.go.disabled) {
+    if (go.disabled) {
       return;
     }
     setNote(note, "");
     // Ник вводят как в списке: с «@» или без. Регистр не хранится —
     // ники строчные (ADR-019).
-    const nick = dm.field.value.trim().replace(/^@/, "").toLowerCase();
+    const nick = input.field.value.trim().replace(/^@/, "").toLowerCase();
     if (nick === "") {
-      dm.field.focus();
+      input.field.focus();
       return;
     }
-    dm.field.value = nick;
-    dm.go.disabled = true;
+    input.field.value = nick;
+    go.disabled = true;
     try {
       await sync.openDm(nick);
       ctx.go(`#/dm/${nick}`);
     } catch (err) {
       setError(note, ctx.errorText(err));
-      dm.field.focus();
+      input.field.focus();
     } finally {
-      dm.go.disabled = false;
+      go.disabled = false;
     }
   });
 
-  room.form.addEventListener("submit", async (event) => {
+  return { ...panel, field: input.field };
+}
+
+function roomForm(ctx) {
+  const panel = section(
+    "создайте новую приватную комнату. сначала в ней будете только вы; участников добавите следующим шагом.",
+  );
+  panel.copy.append(el(
+    "span",
+    "new__aside",
+    "если вас добавят в чужую комнату, она появится в списке сама.",
+  ));
+  const input = field("название новой комнаты", "#название");
+  input.field.maxLength = ROOM_NAME_MAX;
+  const go = el("button", "button", "создать комнату");
+  go.type = "submit";
+  const note = message();
+  panel.form.append(input.wrap, go, note);
+
+  panel.form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (room.go.disabled) {
+    if (go.disabled) {
       return;
     }
     setNote(note, "");
     // Имя вводят как в списке: с «#» или без. Регистр имени комнаты
     // сохраняется — это её название, а не идентификатор.
-    const name = room.field.value.trim().replace(/^#/, "").trim();
+    const name = input.field.value.trim().replace(/^#/, "").trim();
     if (name === "") {
-      room.field.focus();
+      input.field.focus();
       return;
     }
-    room.go.disabled = true;
+    go.disabled = true;
     try {
       const chatId = await sync.createRoom(name);
       if (chatId === null) {
-        room.field.focus();
+        input.field.focus();
         return;
       }
-      ctx.go(`#/room/${sync.roomIdOf(chatId)}`);
+      // Новая комната начинается с одного владельца. Первый полезный
+      // экран — её состав: там сразу видны владелец и добавление людей.
+      ctx.go(`#/room/${sync.roomIdOf(chatId)}/members`);
     } catch (err) {
       setError(note, ctx.errorText(err));
-      room.field.focus();
+      input.field.focus();
     } finally {
-      room.go.disabled = false;
+      go.disabled = false;
     }
   });
 
-  body.append(dm.form, room.form, note);
-  root.append(body);
-  dm.field.focus();
+  return { ...panel, field: input.field };
 }
 
-// row — строка ввода в стиле чата: рамка 1 px ink, слева «>» цветом mark
-// (docs/identity/brief.md, «Компоновка»).
-function row(placeholder) {
-  const form = el("form", "form form--row");
+function section(text) {
+  const root = el("section", "new__panel");
+  const copy = el("p", "new__copy", text);
+  const form = el("form", "form");
   form.noValidate = true;
+  root.append(copy, form);
+  return { root, copy, form };
+}
 
-  const line = el("div", "input");
-  const prompt = el("span", "p", ">");
-  prompt.setAttribute("aria-hidden", "true");
-  const field = el("input", "input__field");
-  field.type = "text";
-  field.placeholder = placeholder;
-  field.autocapitalize = "off";
-  field.autocomplete = "off";
-  field.spellcheck = false;
-  const go = el("button", "input__send", ">");
-  go.type = "submit";
-  line.append(prompt, field, go);
-
-  form.append(line);
-  return { form, field, go };
+function field(label, placeholder) {
+  const wrap = el("label", "field");
+  wrap.append(el("span", null, label));
+  const input = el("input");
+  input.type = "text";
+  input.placeholder = placeholder;
+  input.autocapitalize = "off";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  wrap.append(input);
+  return { wrap, field: input };
 }
 
 function head(ctx) {

@@ -32,7 +32,7 @@ export function renderMembers(root, ctx, roomId) {
   const people = el("section", "block block--first");
   view.list = el("ul", "members");
   view.note = message();
-  people.append(view.list, add(view), view.note);
+  people.append(el("h2", "section", "участники"), view.list, add(view), view.note);
 
   body.append(view.warn, people, exit(view));
   root.append(body);
