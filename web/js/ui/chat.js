@@ -79,7 +79,7 @@ export function renderChat(root, ctx, chatId) {
   root.append(head(view));
 
   view.feed = el("div", "feed");
-  view.body = el("div", "grid");
+  view.body = el("div", "feed-list");
   view.body.setAttribute("aria-live", "polite");
   view.feed.append(view.body);
   // Прокрутка к верхнему краю берёт следующую страницу (ADR-053).
@@ -524,10 +524,23 @@ function line(view, record, previous, parent = view.body) {
   }
   // Подряд идущие сообщения одного автора — без повтора автора.
   const first = marks.length > 0 || !previous || previous.from !== record.from;
-  const node = el("div", first ? "line is-head" : "line");
+  const node = el("div", lineClass(record, view.me, first));
   node.append(author(view, record, first), text(view, record));
   parent.append(...marks, node);
   view.nodes.set(record.id, { node, marks });
+}
+
+// lineClass — своя сторона ленты: свои сообщения вправо, чужие влево
+// (ADR-065), классом на самой строке — выравнивает feed-list.
+function lineClass(record, me, first) {
+  const classes = ["line"];
+  if (record.from === me) {
+    classes.push("line--me");
+  }
+  if (first) {
+    classes.push("is-head");
+  }
+  return classes.join(" ");
 }
 
 // redraw обновляет одну строку на месте: автор и группировка от состояния
